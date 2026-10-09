@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ACH ProGestions & Outils — Pointage</title>
+<style>
+:root{--v:#6B2D8B;--o:#E07B00;--vl:#F3EAF8;--ol:#FDF1E3;--t:#2a2230;--g:#6f6577}
+*{box-sizing:border-box}body{margin:0;font-family:"Segoe UI",Arial,sans-serif;color:var(--t);background:#faf8fc;font-size:14px}
+header{background:var(--v);color:#fff;display:flex;align-items:center;gap:16px;padding:0 20px;height:56px}
+header h1{font-size:17px;margin:0;flex:1;font-weight:600}header h1 span{color:#ffb866}
+header .who{font-size:13px;opacity:.9}button{font:inherit;cursor:pointer;border:0;border-radius:6px;padding:7px 14px}
+.btn{background:var(--v);color:#fff}.btn:hover{background:#581f74}.btn.o{background:var(--o)}.btn.o:hover{background:#c46b00}
+.btn.l{background:#fff;color:var(--v);border:1px solid var(--v)}header button{background:rgba(255,255,255,.15);color:#fff}
+nav{display:flex;gap:4px;padding:10px 20px 0;border-bottom:2px solid var(--v);background:#fff}
+nav button{background:transparent;color:var(--g);border-radius:6px 6px 0 0;padding:9px 16px;font-weight:600}
+nav button.on{background:var(--v);color:#fff}main{padding:20px;max-width:1150px;margin:auto}
+.card{background:#fff;border:1px solid #e4d8ec;border-radius:10px;padding:16px;margin-bottom:16px}
+.card h2{margin:0 0 10px;font-size:15px;color:var(--v)}
+table{border-collapse:collapse;width:100%}th{background:var(--v);color:#fff;font-weight:600;padding:8px;font-size:12.5px;text-align:center}
+td{padding:7px 8px;border-bottom:1px solid #eadff1;vertical-align:top}td.c{text-align:center}tr:hover td{background:#fcfaff}
+input,select,textarea{font:inherit;padding:6px 8px;border:1px solid #cdbbd8;border-radius:6px;width:100%;background:#fff}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--o);border-color:var(--o)}
+.mois{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}.mois button{background:var(--vl);color:var(--v);padding:6px 11px;font-weight:600}
+.mois button.on{background:var(--o);color:#fff}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.badge{padding:3px 10px;border-radius:12px;font-weight:700;font-size:12px;display:inline-block}
+.ok{background:#d9f0e0;color:#1e7b3a}.late{background:#fde0c2;color:var(--o)}.wait{background:#eee;color:#666}.val{background:#d9f0e0;color:#1e7b3a}.nval{background:var(--ol);color:var(--o)}
+.big{font-size:30px;font-weight:700;color:var(--o)}.muted{color:var(--g)}.tot td{background:var(--ol);font-weight:700;color:var(--o)}
+.login{max-width:360px;margin:12vh auto;text-align:center}.login .card{text-align:left}.login label{display:block;margin:10px 0 4px;font-weight:600;color:var(--v)}
+.err{color:#b00020;margin-top:8px;min-height:18px}.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
+.form td{background:var(--ol)}a.x{color:var(--v);cursor:pointer;margin:0 4px;font-size:13px}
+</style></head><body><div id="app"></div>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const MOIS=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
+let token=localStorage.getItem("ach_token"),me=null,tab="",S={annee:0,mois:0,uid:null,empl:[]};
+async function api(p,o={}){const r=await fetch("/api"+p,{...o,headers:{"Content-Type":"application/json",...(token?{Authorization:"Bearer "+token}:{})},body:o.body&&typeof o.body!=="string"?JSON.stringify(o.body):o.body});
+ if(r.status===401&&token&&p!=="/login"){logout();throw new Error("Session expirée");}
+ const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.erreur||"Erreur");return j}
+async function telecharger(p,nom){const r=await fetch("/api"+p,{headers:{Authorization:"Bearer "+token}});if(!r.ok){alert((await r.json()).erreur||"Erreur");return}
+ const a=document.createElement("a");a.href=URL.createObjectURL(await r.blob());a.download=nom;a.click()}
+function logout(){localStorage.removeItem("ach_token");token=null;me=null;sessionStorage.clear();vueLogin()}
+const hdr=()=>`<header><img src="/logo.png" alt="ACH" style="height:38px;width:38px;object-fit:contain;border-radius:6px;background:#fff;padding:2px"><h1>ACH <span>ProGestions</span> &amp; Outils</h1><div class="who">${esc(me.nom)}${me.role==="admin"?" · Administratrice":""}</div><button onclick="logout()">Déconnexion</button></header>`;
+function vueLogin(msg=""){$("#app").innerHTML=`<div class="login"><img src="/logo.png" alt="ACH" style="width:96px;height:96px;object-fit:contain;border-radius:12px;background:#fff;padding:4px;box-shadow:0 3px 10px rgba(107,45,139,.18);margin-bottom:12px"><h1 style="color:var(--v);margin-bottom:2px">ACH <span style="color:var(--o)">ProGestions</span> &amp; Outils</h1><p class="muted">Pointage et timesheet</p>
+<div class="card"><label>Identifiant</label><input id="u" autofocus><label>Mot de passe</label><input id="p" type="password" onkeydown="if(event.key==='Enter')connecter()">
+<div class="err" id="e">${esc(msg)}</div><button class="btn" style="width:100%;margin-top:6px" onclick="connecter()">Se connecter</button></div></div>`}
+let heartbeatTimer = null;
+function lancerSuiviActivite() {
+  if (heartbeatTimer) clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(async () => {
+    if (!token || !me || me.role !== "employe") return;
+    try {
+      const inactif = window.ach?.getIdleTime ? await window.ach.getIdleTime() : 0;
+      await api("/activite-pc", {
+        method: "POST",
+        body: {
+          pc: window.ach?.pc || "navigateur",
+          inactif_secondes: inactif,
+          arret: 0
+        }
+      });
+    } catch (e) {}
+  }, 45000);
+}
+
+async function connecter(){try{const r=await api("/login",{method:"POST",body:{identifiant:$("#u").value,mdp:$("#p").value}});token=r.token;localStorage.setItem("ach_token",token);if(window.ach?.setToken)await window.ach.setToken(token);lancerSuiviActivite();await demarrer()}catch(e){$("#e").textContent=e.message}}
+async function demarrer(){try{me=await api("/me");if(window.ach?.setToken&&token)await window.ach.setToken(token);lancerSuiviActivite()}catch{return vueLogin()}
+ const d=me.date;S.annee=+d.slice(0,4);S.mois=+d.slice(5,7);S.uid=me.id;
+ if(me.doit_changer_mdp)return vueMdp();
+ if(me.role==="employe"&&!sessionStorage.auto){sessionStorage.auto=1;try{await api("/connexion",{method:"POST",body:{type:"auto",pc:window.ach?.pc||"navigateur",heure_pc:window.ach?.demarrage||new Date().toTimeString().slice(0,8)}})}catch{}}
+ // Synchroniser les pointages accumulés en attente si existants
+ if(window.ach?.lireAttente){try{const f=await window.ach.lireAttente();if((f.connexions&&f.connexions.length)||(f.activites&&f.activites.length)){const s=await api("/sync-offline",{method:"POST",body:f});if(s.ok&&window.ach?.viderAttente)await window.ach.viderAttente();}}catch(e){}}
+ tab=me.role==="admin"?"bord":"ts";shell()}
+function vueMdp(){$("#app").innerHTML=hdr()+`<div class="login" style="margin-top:6vh"><div class="card"><h2>Choisissez votre mot de passe</h2><p class="muted">Pour votre sécurité, remplacez le mot de passe provisoire (8 caractères minimum).</p>
+<label>Mot de passe actuel</label><input id="a" type="password"><label style="margin-top:8px;display:block">Nouveau mot de passe</label><input id="n" type="password"><div class="err" id="e"></div>
+<button class="btn" onclick="chgMdp()">Enregistrer</button></div></div>`}
+async function chgMdp(){try{await api("/mon-mot-de-passe",{method:"POST",body:{ancien:$("#a").value,nouveau:$("#n").value}});me.doit_changer_mdp=false;tab=me.role==="admin"?"bord":"ts";shell()}catch(e){$("#e").textContent=e.message}}
+function shell(){const t=me.role==="admin"?[["bord","Tableau de bord"],["ts","Timesheets"],["pt","Pointages"],["emp","Employés"],["par","Paramètres"]]:[["ts","Mon timesheet"]];
+ $("#app").innerHTML=hdr()+`<nav>${t.map(([k,l])=>`<button class="${k===tab?"on":""}" onclick="tab='${k}';shell()">${l}</button>`).join("")}</nav><main id="m"></main>`;
+ ({bord:vBord,ts:vTs,pt:vPt,emp:vEmp,par:vPar})[tab]()}
+const badge=s=>`<span class="badge ${s==="Validé"?"val":"nval"}">${esc(s)}</span>`;
+const mm=()=>`${S.annee}-${String(S.mois).padStart(2,"0")}`;
+// ----- Tableau de bord
+async function vBord(){const dt=S.jour||me.date;const r=await api("/tableau-de-bord?date="+dt);
+ const cl=s=>s==="En retard"?"late":s==="À l'heure"?"ok":"wait";
+ $("#m").innerHTML=`<div class="card row"><b style="color:var(--v)">Date consultée</b><input type="date" style="width:170px" value="${r.date}" onchange="S.jour=this.value;vBord()"><span class="muted">Arrivée attendue : ${r.heure_attendue} · mois : ${MOIS[+r.mois.slice(5)-1]} ${r.mois.slice(0,4)}</span></div>
+ <div class="card"><table><tr><th style="text-align:left">Employé</th><th>Ordinateur</th><th>Arrivée</th><th>Statut</th><th>Dernière activité</th><th>Inactivité max</th><th>Arrêt / État PC</th><th>Heures jour</th><th>Heures mois</th><th>Mois</th></tr>
+ ${r.lignes.map(l=>`<tr><td><b style="color:var(--v)">${esc(l.nom)}</b></td><td class="c muted">${esc(l.pc)}</td><td class="c">${l.arrivee||"—"}</td><td class="c"><span class="badge ${cl(l.statut)}">${l.statut}</span></td><td class="c"><b>${l.derniere_action||"—"}</b></td><td class="c">${l.inactif_minutes>0?`<span style="color:${l.inactif_minutes>=10?'#b00020':'#6f6577'};font-weight:600">${l.inactif_minutes} min</span>`:'—'}</td><td class="c"><span class="badge ${l.heure_arret.startsWith('En service')?'ok':'wait'}">${esc(l.heure_arret)}</span></td><td class="c">${l.heures_jour}</td><td class="c">${l.heures_mois}</td><td class="c">${badge(l.statut_mois)}</td></tr>`).join("")||`<tr><td colspan="10" class="muted">Aucun employé actif. Créez-en dans l'onglet « Employés ».</td></tr>`}
+ <tr class="tot"><td>TOTAL</td><td></td><td></td><td></td><td></td><td></td><td></td><td class="c">${r.lignes.reduce((a,l)=>a+l.heures_jour,0)}</td><td class="c">${r.lignes.reduce((a,l)=>a+l.heures_mois,0)}</td><td></td></tr></table></div>`}
+// ----- Timesheet (employé ou admin)
+async function vTs(){
+ if(me.role==="admin"&&!S.empl.length)S.empl=(await api("/utilisateurs")).filter(u=>u.role==="employe"&&u.actif);
+ if(me.role==="admin"&&!S.empl.find(u=>u.id===S.uid))S.uid=S.empl[0]?.id;
+ if(!S.uid)return $("#m").innerHTML=`<div class="card muted">Créez d'abord un employé.</div>`;
+ const r=await api(`/saisies?user_id=${S.uid}&mois=${mm()}`),adm=me.role==="admin",ok=r.validation.statut==="Validé",lock=ok&&!adm;
+ const ar=me.role==="employe"?await api("/aujourdhui"):null;
+ S.rows=r.saisies;const total=r.saisies.reduce((a,s)=>a+s.heures,0);
+ const dflt=(me.date.slice(0,7)===mm())?me.date:mm()+"-01";
+ $("#m").innerHTML=(ar?`<div class="card row"><div><div class="muted">Arrivée du jour (${ar.date.split("-").reverse().join("/")})</div><div class="big">${ar.arrivee||"—"}</div></div>
+ <button class="btn o" onclick="commencer()">Je commence</button><span class="muted">Votre heure de connexion est aussi enregistrée automatiquement à l'ouverture de l'application.</span></div>`:"")
+ +`<div class="card"><div class="row">${adm?`<b style="color:var(--v)">Employé</b><select style="width:200px" onchange="S.uid=+this.value;vTs()">${S.empl.map(u=>`<option value="${u.id}" ${u.id===S.uid?"selected":""}>${esc(u.nom)}</option>`).join("")}</select>`:""}
+ <b style="color:var(--v)">Année</b><input type="number" style="width:90px" value="${S.annee}" onchange="S.annee=+this.value;vTs()">
+ <span style="flex:1"></span>${badge(r.validation.statut)}
+ ${adm?`<button class="btn ${ok?"l":""}" onclick="valider('${ok?"Non validé":"Validé"}')">${ok?"Annuler la validation":"Valider ce mois"}</button>`:""}
+ <button class="btn l" onclick="telecharger('/export/pdf?user_id=${S.uid}&mois=${mm()}','Timesheet_${mm()}.pdf')">PDF du mois</button>
+ <button class="btn l" onclick="telecharger('/export/excel?user_id=${S.uid}&annee=${S.annee}','Timesheet_${S.annee}.xlsx')">Excel (12 mois)</button></div>
+ <div class="mois">${MOIS.map((n,i)=>`<button class="${i+1===S.mois?"on":""}" onclick="S.mois=${i+1};vTs()">${n}</button>`).join("")}</div>
+ <table><tr><th>Date</th><th>Arrivée</th><th>Activité</th><th>Client / Contact</th><th>Tâche</th><th>Description</th><th>Heures</th><th></th></tr>
+ ${lock?"":`<tr class="form"><td><input type="date" id="fd" value="${dflt}"></td><td class="c muted">auto</td><td><select id="fa">${me.activites.map(a=>`<option>${esc(a)}</option>`).join("")}</select></td><td><input id="fc"></td><td><input id="ft"></td><td><textarea id="fx" rows="1"></textarea></td><td><input id="fh" style="width:70px" placeholder="0"></td><td><button class="btn o" onclick="ajouter()">Ajouter</button></td></tr>`}
+ ${r.saisies.map(s=>`<tr><td class="c">${s.date.split("-").reverse().join("/")}</td><td class="c" style="color:var(--v);font-weight:700">${s.arrivee||"—"}</td><td>${esc(s.activite)}</td><td>${esc(s.client)}</td><td>${esc(s.tache)}</td><td>${esc(s.description)}</td><td class="c">${s.heures}</td><td>${lock?"":`<a class="x" onclick="modifier(${s.id})">modifier</a><a class="x" style="color:#b00020" onclick="suppr(${s.id})">suppr.</a>`}</td></tr>`).join("")}
+ <tr class="tot"><td colspan="6" style="text-align:right">TOTAL ${MOIS[S.mois-1].toUpperCase()}</td><td class="c">${total}</td><td></td></tr></table>
+ ${lock?`<p class="muted">Ce mois est validé par la direction : il n'est plus modifiable.</p>`:""}</div>`}
+async function commencer(){await api("/connexion",{method:"POST",body:{type:"manuel",pc:window.ach?.pc||"navigateur"}});vTs()}
+async function ajouter(){try{await api("/saisies",{method:"POST",body:{user_id:S.uid,date:$("#fd").value,activite:$("#fa").value,client:$("#fc").value,tache:$("#ft").value,description:$("#fx").value,heures:$("#fh").value||0}});
+ const d=$("#fd").value;if(d)S.mois=+d.slice(5,7),S.annee=+d.slice(0,4);vTs()}catch(e){alert(e.message)}}
+async function modifier(id){const s=S.rows.find(x=>x.id===id);const h=prompt("Heures",s.heures);if(h===null)return;const c=prompt("Client / Contact",s.client);if(c===null)return;const t=prompt("Tâche",s.tache);if(t===null)return;const x=prompt("Description",s.description);if(x===null)return;
+ try{await api("/saisies/"+s.id,{method:"PUT",body:{date:s.date,activite:s.activite,client:c,tache:t,description:x,heures:h}});vTs()}catch(e){alert(e.message)}}
+async function suppr(id){if(!confirm("Supprimer cette ligne ?"))return;try{await api("/saisies/"+id,{method:"DELETE"});vTs()}catch(e){alert(e.message)}}
+async function valider(st){await api("/validation",{method:"POST",body:{user_id:S.uid,mois:mm(),statut:st}});vTs()}
+// ----- Pointages
+async function vPt(){const r=await api("/connexions?mois="+mm());
+ $("#m").innerHTML=`<div class="card"><div class="row"><b style="color:var(--v)">Année</b><input type="number" style="width:90px" value="${S.annee}" onchange="S.annee=+this.value;vPt()"></div>
+ <div class="mois">${MOIS.map((n,i)=>`<button class="${i+1===S.mois?"on":""}" onclick="S.mois=${i+1};vPt()">${n}</button>`).join("")}</div>
+ <table><tr><th>Date</th><th>Heure (serveur)</th><th>Employé</th><th>Type</th><th>Ordinateur</th><th>Heure du PC</th></tr>
+ ${r.map(c=>`<tr><td class="c">${c.date.split("-").reverse().join("/")}</td><td class="c"><b>${c.heure}</b></td><td>${esc(c.nom)}</td><td class="c">${c.type==="auto"?"Automatique":"Bouton « Je commence »"}</td><td>${esc(c.pc)}</td><td class="c muted">${esc(c.heure_pc)}</td></tr>`).join("")||`<tr><td colspan="6" class="muted">Aucun pointage ce mois-ci.</td></tr>`}</table></div>`}
+// ----- Employés
+async function vEmp(){const u=await api("/utilisateurs");
+ $("#m").innerHTML=`<div class="card"><h2>Créer un compte employé</h2><div class="grid"><input id="cn" placeholder="Nom complet"><input id="ci" placeholder="Identifiant (ex. doriane)"><input id="cp" placeholder="Poste"><input id="cm" placeholder="Mot de passe provisoire (8 car. min.)"></div>
+ <div class="err" id="e"></div><button class="btn o" onclick="creer()">Créer le compte</button><p class="muted">L'employé devra choisir son propre mot de passe à sa première connexion.</p></div>
+ <div class="card"><table><tr><th style="text-align:left">Nom</th><th>Identifiant</th><th>Poste</th><th>Rôle</th><th>État</th><th></th></tr>
+ ${u.map(x=>`<tr><td><b>${esc(x.nom)}</b></td><td class="c">${esc(x.identifiant)}</td><td class="c">${esc(x.poste)}</td><td class="c">${x.role==="admin"?"Administratrice":"Employé"}</td><td class="c"><span class="badge ${x.actif?"ok":"wait"}">${x.actif?"Actif":"Désactivé"}</span></td>
+ <td><a class="x" onclick="reinit(${x.id})">nouveau mot de passe</a>${x.id!==me.id?`<a class="x" onclick="bascule(${x.id},${!x.actif})">${x.actif?"désactiver":"réactiver"}</a>`:""}</td></tr>`).join("")}</table></div>`}
+async function creer(){try{await api("/utilisateurs",{method:"POST",body:{nom:$("#cn").value,identifiant:$("#ci").value,poste:$("#cp").value,mdp:$("#cm").value}});S.empl=[];vEmp()}catch(e){$("#e").textContent=e.message}}
+async function reinit(id){const m=prompt("Nouveau mot de passe provisoire (8 caractères minimum) :");if(!m)return;try{await api("/utilisateurs/"+id,{method:"PUT",body:{mdp:m}});alert("Mot de passe modifié.")}catch(e){alert(e.message)}}
+async function bascule(id,a){await api("/utilisateurs/"+id,{method:"PUT",body:{actif:a}});S.empl=[];vEmp()}
+// ----- Paramètres
+async function vPar(){const p=await api("/parametres");
+ $("#m").innerHTML=`<div class="card"><h2>Paramètres</h2><label><b>Heure d'arrivée attendue</b></label><input type="time" id="ha" value="${p.heure_attendue}" style="width:140px">
+ <p><b>Activités</b> <span class="muted">(une par ligne)</span></p><textarea id="ac" rows="6">${esc(p.activites.join("\n"))}</textarea><br><br><button class="btn o" onclick="sauverPar()">Enregistrer</button></div>`}
+async function sauverPar(){await api("/parametres",{method:"PUT",body:{heure_attendue:$("#ha").value,activites:$("#ac").value.split("\n")}});me=await api("/me");alert("Paramètres enregistrés.")}
+token?demarrer():vueLogin();
+</script></body></html>

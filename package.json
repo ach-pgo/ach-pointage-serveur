@@ -1,0 +1,17 @@
+{
+  "name": "ach-pointage-serveur",
+  "version": "1.0.0",
+  "description": "ACH Pointage — Serveur Cloud",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.5.0",
+    "bcryptjs": "^2.4.3",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "pdfkit": "^0.15.0"
+  }
+}
