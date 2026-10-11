@@ -8,13 +8,95 @@ const PDFDocument = require("pdfkit");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const https = require("https");
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const FUSEAU = process.env.FUSEAU || "Africa/Lagos"; // Bénin = UTC+1
 fs.mkdirSync(DATA_DIR, { recursive: true });
-const db = new Database(path.join(DATA_DIR, "ach.db"));
+
+const TURSO_URL = process.env.TURSO_DATABASE_URL || "https://ach-pointage-db-ach-pgo.aws-eu-west-1.turso.io";
+const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTE3MjgzODUsImlkIjoiMDFhMTJiNGItOTcwMS03ZmI3LWFkN2EtNzEzZTQ3NGM5NDZlIiwia2lkIjoiRElBa3RvTmpxQjRyckY5RS1nUWRrU2l2bloxZnJReTU4a2gyVkZ2aXQ3TSIsInJpZCI6IjViYjJmNDA5LTc0YTktNGUyYS1iMWJhLTFiZDk3YWE2OTJkNSJ9.z1fKesSsyHp4IXaYptWelyZKKsiE4p6N6-CBlIqyCqJN02fUN5ZtbLAO9FMcoltGFbdjVR4sEHL9wbIYhNZbAg";
+
+function queryTurso(sql, args = []) {
+  return new Promise(resolve => {
+    try {
+      const endpoint = TURSO_URL.replace(/^libsql:\/\//, "https://").replace(/\/$/, "") + "/v2/pipeline";
+      const payload = JSON.stringify({ requests: [{ type: "execute", stmt: { sql, args } }] });
+      const req = https.request(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + TURSO_TOKEN }
+      }, res => {
+        let raw = "";
+        res.on("data", c => raw += c);
+        res.on("end", () => {
+          try {
+            const j = JSON.parse(raw);
+            resolve(j?.results?.[0]?.response?.result || null);
+          } catch { resolve(null); }
+        });
+      });
+      req.on("error", () => resolve(null));
+      req.write(payload);
+      req.end();
+    } catch { resolve(null); }
+  });
+}
+
+const dbPath = path.join(DATA_DIR, "ach.db");
+
+// Restauration synchrone avant initialisation de la base si disponible sur Turso
+try {
+  const child = require("child_process");
+  const restoreScript = `
+    const https = require('https'); const fs = require('fs');
+    const u = ('${TURSO_URL}'.replace(/^libsql:\\/\\//, 'https://').replace(/\\/$/, '')) + '/v2/pipeline';
+    const postData = JSON.stringify({ requests: [{ type: 'execute', stmt: { sql: 'SELECT donnees_base64 FROM _ach_cloud_backup WHERE id=1' } }] });
+    const req = https.request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ${TURSO_TOKEN}' } }, res => {
+      let d = ''; res.on('data', c => d += c);
+      res.on('end', () => {
+        try {
+          const j = JSON.parse(d);
+          const b64 = j?.results?.[0]?.response?.result?.rows?.[0]?.[0]?.value;
+          if (b64 && b64.length > 50) {
+            fs.writeFileSync('${dbPath.replace(/\\/g, "/")}', Buffer.from(b64, 'base64'));
+            console.log('Restauré depuis Turso avec succès (' + b64.length + ' octets base64)');
+          }
+        } catch(e) {}
+      });
+    });
+    req.on('error', () => {});
+    req.write(postData); req.end();
+  `;
+  child.execSync(`node -e "${restoreScript.replace(/\n/g, ' ')}"`, { timeout: 8000 });
+} catch(e) {}
+
+const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
+
+let sauvTimeout = null;
+function synchroniserTurso() {
+  if (sauvTimeout) clearTimeout(sauvTimeout);
+  sauvTimeout = setTimeout(async () => {
+    try {
+      const b64 = db.serialize().toString("base64");
+      const n = new Date().toISOString().slice(0, 19).replace("T", " ");
+      await queryTurso(`
+        CREATE TABLE IF NOT EXISTS _ach_cloud_backup (id INTEGER PRIMARY KEY, date_maj TEXT, donnees_base64 TEXT)
+      `);
+      await queryTurso(`
+        INSERT INTO _ach_cloud_backup(id, date_maj, donnees_base64) VALUES(1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET date_maj=excluded.date_maj, donnees_base64=excluded.donnees_base64
+      `, [{ type: "text", value: n }, { type: "text", value: b64 }]);
+      console.log("Sauvegarde permanente effectuée sur Turso Cloud (" + n + ")");
+    } catch (e) {
+      console.warn("Avertissement sauvegarde Turso:", e.message);
+    }
+  }, 1000);
+}
+
+// Sauvegarde automatique toutes les 15 minutes
+setInterval(synchroniserTurso, 15 * 60 * 1000);
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS utilisateurs (
@@ -42,7 +124,10 @@ CREATE INDEX IF NOT EXISTS idx_actpc ON activites_pc(user_id, date);
 `);
 
 const getParam = (k, d) => { const r = db.prepare("SELECT valeur FROM parametres WHERE cle=?").get(k); return r ? r.valeur : d; };
-const setParam = (k, v) => db.prepare("INSERT INTO parametres(cle,valeur) VALUES(?,?) ON CONFLICT(cle) DO UPDATE SET valeur=excluded.valeur").run(k, v);
+const setParam = (k, v) => {
+  db.prepare("INSERT INTO parametres(cle,valeur) VALUES(?,?) ON CONFLICT(cle) DO UPDATE SET valeur=excluded.valeur").run(k, v);
+  synchroniserTurso();
+};
 let SECRET = process.env.JWT_SECRET || getParam("jwt_secret", null);
 if (!SECRET) { SECRET = crypto.randomBytes(48).toString("hex"); setParam("jwt_secret", SECRET); }
 if (!getParam("activites", null)) setParam("activites", JSON.stringify(["Deméya Service Conseil", "EHPAD Invest", "Autre"]));
@@ -53,6 +138,7 @@ if (db.prepare("SELECT COUNT(*) c FROM utilisateurs").get().c === 0) {
   db.prepare("INSERT INTO utilisateurs(nom,identifiant,poste,mdp_hash,role,doit_changer_mdp) VALUES(?,?,?,?,?,1)")
     .run(process.env.ADMIN_NOM || "Hosiane AYABA", u, "Direction", bcrypt.hashSync(p, 10), "admin");
   console.log(`Compte administrateur créé : identifiant "${u}" — changez le mot de passe dès la première connexion.`);
+  synchroniserTurso();
 }
 
 // ---------- utilitaires
@@ -107,6 +193,7 @@ app.post("/api/mon-mot-de-passe", auth, (req, res) => {
   if (!bcrypt.compareSync(ancien, req.user.mdp_hash)) return res.status(400).json({ erreur: "Ancien mot de passe incorrect." });
   if (nouveau.length < 8) return res.status(400).json({ erreur: "Le nouveau mot de passe doit contenir au moins 8 caractères." });
   db.prepare("UPDATE utilisateurs SET mdp_hash=?, doit_changer_mdp=0 WHERE id=?").run(bcrypt.hashSync(nouveau, 10), req.user.id);
+  synchroniserTurso();
   res.json({ ok: true });
 });
 
@@ -120,6 +207,7 @@ app.post("/api/connexion", auth, (req, res) => {
   }
   db.prepare("INSERT INTO connexions(user_id,date,heure,type,pc,heure_pc,ts) VALUES(?,?,?,?,?,?,?)")
     .run(req.user.id, n.date, n.heure, type, String(req.body?.pc || "").slice(0, 80), String(req.body?.heure_pc || "").slice(0, 40), ts);
+  synchroniserTurso();
   res.json({ ok: true, arrivee: arrivee(req.user.id, n.date) });
 });
 const arrivee = (uid, date) => hhmm(db.prepare("SELECT MIN(heure) h FROM connexions WHERE user_id=? AND date=?").get(uid, date).h);
@@ -185,6 +273,7 @@ app.post("/api/sync-offline", auth, (req, res) => {
     }
   }
 
+  if (insConn > 0 || insAct > 0) synchroniserTurso();
   res.json({ ok: true, synchronises: { connexions: insConn, activites: insAct } });
 });
 
@@ -217,6 +306,7 @@ app.post("/api/activite-pc", auth, (req, res) => {
       WHERE id=?
     `).run(pc || exist.pc, n.heure, heureAction, maxInactif, arret || exist.arret_detecte, heureArr, ts, exist.id);
   }
+  synchroniserTurso();
   res.json({ ok: true });
 });
 
@@ -247,6 +337,7 @@ app.post("/api/saisies", auth, (req, res) => {
   const s = lireSaisie(req.body || {}); if (s.erreur) return res.status(400).json(s);
   if (verrou(req, u.id, s.v[0])) return res.status(423).json({ erreur: "Ce mois est validé : modification impossible." });
   const r = db.prepare("INSERT INTO saisies(user_id,date,activite,client,tache,description,heures) VALUES(?,?,?,?,?,?,?)").run(u.id, ...s.v);
+  synchroniserTurso();
   res.json({ id: r.lastInsertRowid });
 });
 function saisieAutorisee(req, res) {
@@ -260,11 +351,14 @@ app.put("/api/saisies/:id", auth, (req, res) => {
   const n = lireSaisie(req.body || {}); if (n.erreur) return res.status(400).json(n);
   if (verrou(req, s.user_id, n.v[0])) return res.status(423).json({ erreur: "Le mois choisi est validé." });
   db.prepare("UPDATE saisies SET date=?,activite=?,client=?,tache=?,description=?,heures=? WHERE id=?").run(...n.v, s.id);
+  synchroniserTurso();
   res.json({ ok: true });
 });
 app.delete("/api/saisies/:id", auth, (req, res) => {
   const s = saisieAutorisee(req, res); if (!s) return;
-  db.prepare("DELETE FROM saisies WHERE id=?").run(s.id); res.json({ ok: true });
+  db.prepare("DELETE FROM saisies WHERE id=?").run(s.id);
+  synchroniserTurso();
+  res.json({ ok: true });
 });
 
 // ---------- administration
@@ -273,6 +367,7 @@ app.post("/api/validation", auth, admin, (req, res) => {
   if (!moisValide(mois) || !["Validé", "Non validé"].includes(statut)) return res.status(400).json({ erreur: "Données invalides." });
   db.prepare("INSERT INTO validations(user_id,mois,statut,valide_par,date_validation) VALUES(?,?,?,?,?) ON CONFLICT(user_id,mois) DO UPDATE SET statut=excluded.statut,valide_par=excluded.valide_par,date_validation=excluded.date_validation")
     .run(user_id, mois, statut, req.user.nom, maintenantLocal().date);
+  synchroniserTurso();
   res.json({ ok: true });
 });
 app.get("/api/utilisateurs", auth, admin, (req, res) => res.json(db.prepare("SELECT * FROM utilisateurs ORDER BY role,nom").all().map(publicUser)));
@@ -283,6 +378,7 @@ app.post("/api/utilisateurs", auth, admin, (req, res) => {
   try {
     const r = db.prepare("INSERT INTO utilisateurs(nom,identifiant,poste,mdp_hash,role,doit_changer_mdp) VALUES(?,?,?,?,?,1)")
       .run(nom.trim(), identifiant.trim(), poste.trim(), bcrypt.hashSync(mdp, 10), role === "admin" ? "admin" : "employe");
+    synchroniserTurso();
     res.json({ id: r.lastInsertRowid });
   } catch { res.status(409).json({ erreur: "Cet identifiant existe déjà." }); }
 });
@@ -296,6 +392,7 @@ app.put("/api/utilisateurs/:id", auth, admin, (req, res) => {
     if (mdp.length < 8) return res.status(400).json({ erreur: "Mot de passe : 8 caractères minimum." });
     db.prepare("UPDATE utilisateurs SET mdp_hash=?, doit_changer_mdp=1 WHERE id=?").run(bcrypt.hashSync(mdp, 10), u.id);
   }
+  synchroniserTurso();
   res.json({ ok: true });
 });
 app.get("/api/parametres", auth, (req, res) => res.json({ activites: JSON.parse(getParam("activites")), heure_attendue: getParam("heure_attendue") }));
