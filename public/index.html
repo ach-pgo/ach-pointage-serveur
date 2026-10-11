@@ -126,10 +126,11 @@ async function vEmp(){const u=await api("/utilisateurs");
  <div class="err" id="e"></div><button class="btn o" onclick="creer()">Créer le compte</button><p class="muted">L'employé devra choisir son propre mot de passe à sa première connexion.</p></div>
  <div class="card"><table><tr><th style="text-align:left">Nom</th><th>Identifiant</th><th>Poste</th><th>Rôle</th><th>État</th><th></th></tr>
  ${u.map(x=>`<tr><td><b>${esc(x.nom)}</b></td><td class="c">${esc(x.identifiant)}</td><td class="c">${esc(x.poste)}</td><td class="c">${x.role==="admin"?"Administratrice":"Employé"}</td><td class="c"><span class="badge ${x.actif?"ok":"wait"}">${x.actif?"Actif":"Désactivé"}</span></td>
- <td><a class="x" onclick="reinit(${x.id})">nouveau mot de passe</a>${x.id!==me.id?`<a class="x" onclick="bascule(${x.id},${!x.actif})">${x.actif?"désactiver":"réactiver"}</a>`:""}</td></tr>`).join("")}</table></div>`}
+ <td><a class="x" onclick="reinit(${x.id})">nouveau mot de passe</a>${x.id!==me.id?`<a class="x" onclick="bascule(${x.id},${!x.actif})">${x.actif?"désactiver":"réactiver"}</a><a class="x" style="color:#b00020" onclick="supprEmp(${x.id},'${esc(x.nom)}')">supprimer</a>`:""}</td></tr>`).join("")}</table></div>`}
 async function creer(){try{await api("/utilisateurs",{method:"POST",body:{nom:$("#cn").value,identifiant:$("#ci").value,poste:$("#cp").value,mdp:$("#cm").value}});S.empl=[];vEmp()}catch(e){$("#e").textContent=e.message}}
 async function reinit(id){const m=prompt("Nouveau mot de passe provisoire (8 caractères minimum) :");if(!m)return;try{await api("/utilisateurs/"+id,{method:"PUT",body:{mdp:m}});alert("Mot de passe modifié.")}catch(e){alert(e.message)}}
 async function bascule(id,a){await api("/utilisateurs/"+id,{method:"PUT",body:{actif:a}});S.empl=[];vEmp()}
+async function supprEmp(id,nom){if(!confirm("Êtes-vous sûr(e) de vouloir supprimer définitivement l'employé(e) « "+nom+" » ?"))return;try{await api("/utilisateurs/"+id,{method:"DELETE"});S.empl=[];vEmp()}catch(e){alert(e.message)}}
 // ----- Paramètres
 async function vPar(){const p=await api("/parametres");
  $("#m").innerHTML=`<div class="card"><h2>Paramètres</h2><label><b>Heure d'arrivée attendue</b></label><input type="time" id="ha" value="${p.heure_attendue}" style="width:140px">
