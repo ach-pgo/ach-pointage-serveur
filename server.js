@@ -18,11 +18,24 @@ fs.mkdirSync(DATA_DIR, { recursive: true });
 const TURSO_URL = process.env.TURSO_DATABASE_URL || "https://ach-pointage-db-ach-pgo.aws-eu-west-1.turso.io";
 const TURSO_TOKEN = process.env.TURSO_AUTH_TOKEN || "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3OTE3MjgzODUsImlkIjoiMDFhMTJiNGItOTcwMS03ZmI3LWFkN2EtNzEzZTQ3NGM5NDZlIiwia2lkIjoiRElBa3RvTmpxQjRyckY5RS1nUWRrU2l2bloxZnJReTU4a2gyVkZ2aXQ3TSIsInJpZCI6IjViYjJmNDA5LTc0YTktNGUyYS1iMWJhLTFiZDk3YWE2OTJkNSJ9.z1fKesSsyHp4IXaYptWelyZKKsiE4p6N6-CBlIqyCqJN02fUN5ZtbLAO9FMcoltGFbdjVR4sEHL9wbIYhNZbAg";
 
-function queryTurso(sql, args = []) {
-  return new Promise(resolve => {
-    try {
-      const endpoint = TURSO_URL.replace(/^libsql:\/\//, "https://").replace(/\/$/, "") + "/v2/pipeline";
-      const payload = JSON.stringify({ requests: [{ type: "execute", stmt: { sql, args } }] });
+let db;
+let SECRET = process.env.JWT_SECRET || "ach_pgo_jwt_permanent_secret_key_2026";
+
+async function queryTurso(sql, args = []) {
+  try {
+    const endpoint = TURSO_URL.replace(/^libsql:\/\//, "https://").replace(/\/$/, "") + "/v2/pipeline";
+    const payload = JSON.stringify({ requests: [{ type: "execute", stmt: { sql, args } }] });
+    if (typeof fetch === "function") {
+      const rep = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + TURSO_TOKEN },
+        body: payload
+      });
+      if (!rep.ok) return null;
+      const j = await rep.json();
+      return j?.results?.[0]?.response?.result || null;
+    }
+    return new Promise(resolve => {
       const req = https.request(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": "Bearer " + TURSO_TOKEN }
@@ -39,46 +52,46 @@ function queryTurso(sql, args = []) {
       req.on("error", () => resolve(null));
       req.write(payload);
       req.end();
-    } catch { resolve(null); }
-  });
+    });
+  } catch (err) {
+    console.warn("Erreur queryTurso:", err.message);
+    return null;
+  }
 }
 
 const dbPath = path.join(DATA_DIR, "ach.db");
 
-// Restauration synchrone avant initialisation de la base si disponible sur Turso
-try {
-  const child = require("child_process");
-  const restoreScript = `
-    const https = require('https'); const fs = require('fs');
-    const u = ('${TURSO_URL}'.replace(/^libsql:\\/\\//, 'https://').replace(/\\/$/, '')) + '/v2/pipeline';
-    const postData = JSON.stringify({ requests: [{ type: 'execute', stmt: { sql: 'SELECT donnees_base64 FROM _ach_cloud_backup WHERE id=1' } }] });
-    const req = https.request(u, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ${TURSO_TOKEN}' } }, res => {
-      let d = ''; res.on('data', c => d += c);
-      res.on('end', () => {
-        try {
-          const j = JSON.parse(d);
-          const b64 = j?.results?.[0]?.response?.result?.rows?.[0]?.[0]?.value;
-          if (b64 && b64.length > 50) {
-            fs.writeFileSync('${dbPath.replace(/\\/g, "/")}', Buffer.from(b64, 'base64'));
-            console.log('Restauré depuis Turso avec succès (' + b64.length + ' octets base64)');
-          }
-        } catch(e) {}
-      });
-    });
-    req.on('error', () => {});
-    req.write(postData); req.end();
-  `;
-  child.execSync(`node -e "${restoreScript.replace(/\n/g, ' ')}"`, { timeout: 8000 });
-} catch(e) {}
-
-const db = new Database(dbPath);
-db.pragma("journal_mode = WAL");
+async function restaurerDepuisTurso() {
+  if (!TURSO_URL || !TURSO_TOKEN) return false;
+  try {
+    console.log("Connexion à Turso Cloud pour vérifier la sauvegarde...");
+    const res = await queryTurso("SELECT donnees_base64 FROM _ach_cloud_backup WHERE id=1");
+    const b64 = res?.rows?.[0]?.[0]?.value;
+    if (b64 && b64.length > 50) {
+      fs.writeFileSync(dbPath, Buffer.from(b64, "base64"));
+      console.log(`Base restaurée avec succès depuis Turso Cloud (${b64.length} caractères base64).`);
+      return true;
+    } else {
+      console.log("Aucune sauvegarde antérieure trouvée sur Turso Cloud.");
+    }
+  } catch (err) {
+    console.error("Erreur lors de la restauration Turso Cloud:", err.message);
+  }
+  return false;
+}
 
 let sauvTimeout = null;
-function synchroniserTurso() {
+function synchroniserTurso(immediat = false) {
+  if (!db) return;
   if (sauvTimeout) clearTimeout(sauvTimeout);
-  sauvTimeout = setTimeout(async () => {
+
+  const executer = async () => {
     try {
+      const nbUsers = db.prepare("SELECT COUNT(*) c FROM utilisateurs").get().c;
+      if (nbUsers === 0) {
+        console.warn("Sécurité anti-écrasement : sauvegarde annulée car aucun utilisateur en base.");
+        return;
+      }
       const b64 = db.serialize().toString("base64");
       const n = new Date().toISOString().slice(0, 19).replace("T", " ");
       await queryTurso(`
@@ -88,58 +101,44 @@ function synchroniserTurso() {
         INSERT INTO _ach_cloud_backup(id, date_maj, donnees_base64) VALUES(1, ?, ?)
         ON CONFLICT(id) DO UPDATE SET date_maj=excluded.date_maj, donnees_base64=excluded.donnees_base64
       `, [{ type: "text", value: n }, { type: "text", value: b64 }]);
-      console.log("Sauvegarde permanente effectuée sur Turso Cloud (" + n + ")");
+      console.log(`Sauvegarde permanente effectuée sur Turso Cloud (${n}, ${nbUsers} utilisateur(s))`);
     } catch (e) {
       console.warn("Avertissement sauvegarde Turso:", e.message);
     }
-  }, 1000);
+  };
+
+  if (immediat) {
+    executer();
+  } else {
+    sauvTimeout = setTimeout(executer, 1200);
+  }
 }
 
-// Sauvegarde automatique toutes les 15 minutes
-setInterval(synchroniserTurso, 15 * 60 * 1000);
+process.on("SIGTERM", async () => {
+  console.log("Arrêt du conteneur reçu : synchronisation finale sur Turso...");
+  if (db) {
+    try {
+      const nbUsers = db.prepare("SELECT COUNT(*) c FROM utilisateurs").get().c;
+      if (nbUsers > 0) {
+        const b64 = db.serialize().toString("base64");
+        const n = new Date().toISOString().slice(0, 19).replace("T", " ");
+        await queryTurso(`
+          INSERT INTO _ach_cloud_backup(id, date_maj, donnees_base64) VALUES(1, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET date_maj=excluded.date_maj, donnees_base64=excluded.donnees_base64
+        `, [{ type: "text", value: n }, { type: "text", value: b64 }]);
+        console.log("Sauvegarde finale effectuée avec succès.");
+      }
+    } catch(e) {}
+  }
+  process.exit(0);
+});
 
-db.exec(`
-CREATE TABLE IF NOT EXISTS utilisateurs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT NOT NULL, identifiant TEXT NOT NULL UNIQUE,
-  poste TEXT DEFAULT '', mdp_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'employe',
-  actif INTEGER NOT NULL DEFAULT 1, doit_changer_mdp INTEGER NOT NULL DEFAULT 0);
-CREATE TABLE IF NOT EXISTS connexions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL, heure TEXT NOT NULL,
-  type TEXT NOT NULL, pc TEXT DEFAULT '', heure_pc TEXT DEFAULT '', ts INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_conn ON connexions(user_id, date);
-CREATE TABLE IF NOT EXISTS saisies (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL, activite TEXT DEFAULT '',
-  client TEXT DEFAULT '', tache TEXT DEFAULT '', description TEXT DEFAULT '', heures REAL NOT NULL DEFAULT 0);
-CREATE INDEX IF NOT EXISTS idx_saisies ON saisies(user_id, date);
-CREATE TABLE IF NOT EXISTS validations (
-  user_id INTEGER NOT NULL, mois TEXT NOT NULL, statut TEXT NOT NULL, valide_par TEXT DEFAULT '', date_validation TEXT DEFAULT '',
-  PRIMARY KEY (user_id, mois));
-CREATE TABLE IF NOT EXISTS parametres (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS activites_pc (
-  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL,
-  pc TEXT DEFAULT '', heure_debut TEXT DEFAULT '', heure_dernier_signal TEXT DEFAULT '',
-  derniere_action TEXT DEFAULT '', inactif_secondes INTEGER DEFAULT 0,
-  arret_detecte INTEGER DEFAULT 0, heure_arret TEXT DEFAULT '', ts_maj INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_actpc ON activites_pc(user_id, date);
-`);
-
-const getParam = (k, d) => { const r = db.prepare("SELECT valeur FROM parametres WHERE cle=?").get(k); return r ? r.valeur : d; };
+const getParam = (k, d) => { if (!db) return d; const r = db.prepare("SELECT valeur FROM parametres WHERE cle=?").get(k); return r ? r.valeur : d; };
 const setParam = (k, v) => {
+  if (!db) return;
   db.prepare("INSERT INTO parametres(cle,valeur) VALUES(?,?) ON CONFLICT(cle) DO UPDATE SET valeur=excluded.valeur").run(k, v);
   synchroniserTurso();
 };
-let SECRET = process.env.JWT_SECRET || getParam("jwt_secret", null);
-if (!SECRET) { SECRET = crypto.randomBytes(48).toString("hex"); setParam("jwt_secret", SECRET); }
-if (!getParam("activites", null)) setParam("activites", JSON.stringify(["Deméya Service Conseil", "EHPAD Invest", "Autre"]));
-if (!getParam("heure_attendue", null)) setParam("heure_attendue", "08:00");
-
-if (db.prepare("SELECT COUNT(*) c FROM utilisateurs").get().c === 0) {
-  const u = process.env.ADMIN_USER || "admin", p = process.env.ADMIN_PASSWORD || "ChangeMoi123!";
-  db.prepare("INSERT INTO utilisateurs(nom,identifiant,poste,mdp_hash,role,doit_changer_mdp) VALUES(?,?,?,?,?,1)")
-    .run(process.env.ADMIN_NOM || "Hosiane AYABA", u, "Direction", bcrypt.hashSync(p, 10), "admin");
-  console.log(`Compte administrateur créé : identifiant "${u}" — changez le mot de passe dès la première connexion.`);
-  synchroniserTurso();
-}
 
 // ---------- utilitaires
 const MOIS = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
@@ -509,11 +508,68 @@ app.get("/api/export/pdf", auth, (req, res) => {
 });
 
 app.get("/api/sante", (req, res) => res.json({ ok: true }));
-const srv = app.listen(PORT, () => console.log(`Serveur ACH démarré sur le port ${PORT}`));
-srv.on("error", err => {
-  if (err.code === "EADDRINUSE") {
-    console.log(`Port ${PORT} déjà utilisé, serveur existant conservé.`);
+
+async function demarrer() {
+  // 1. Restauration de la base depuis Turso Cloud
+  await restaurerDepuisTurso();
+
+  // 2. Ouverture de SQLite
+  db = new Database(dbPath);
+  db.pragma("journal_mode = WAL");
+
+  // 3. Création des tables si nécessaire
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS utilisateurs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, nom TEXT NOT NULL, identifiant TEXT NOT NULL UNIQUE,
+    poste TEXT DEFAULT '', mdp_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'employe',
+    actif INTEGER NOT NULL DEFAULT 1, doit_changer_mdp INTEGER NOT NULL DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS connexions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL, heure TEXT NOT NULL,
+    type TEXT NOT NULL, pc TEXT DEFAULT '', heure_pc TEXT DEFAULT '', ts INTEGER NOT NULL);
+  CREATE INDEX IF NOT EXISTS idx_conn ON connexions(user_id, date);
+  CREATE TABLE IF NOT EXISTS saisies (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL, activite TEXT DEFAULT '',
+    client TEXT DEFAULT '', tache TEXT DEFAULT '', description TEXT DEFAULT '', heures REAL NOT NULL DEFAULT 0);
+  CREATE INDEX IF NOT EXISTS idx_saisies ON saisies(user_id, date);
+  CREATE TABLE IF NOT EXISTS validations (
+    user_id INTEGER NOT NULL, mois TEXT NOT NULL, statut TEXT NOT NULL, valide_par TEXT DEFAULT '', date_validation TEXT DEFAULT '',
+    PRIMARY KEY (user_id, mois));
+  CREATE TABLE IF NOT EXISTS parametres (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS activites_pc (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, date TEXT NOT NULL,
+    pc TEXT DEFAULT '', heure_debut TEXT DEFAULT '', heure_dernier_signal TEXT DEFAULT '',
+    derniere_action TEXT DEFAULT '', inactif_secondes INTEGER DEFAULT 0,
+    arret_detecte INTEGER DEFAULT 0, heure_arret TEXT DEFAULT '', ts_maj INTEGER NOT NULL);
+  CREATE INDEX IF NOT EXISTS idx_actpc ON activites_pc(user_id, date);
+  `);
+
+  if (!getParam("activites", null)) setParam("activites", JSON.stringify(["Deméya Service Conseil", "EHPAD Invest", "Autre"]));
+  if (!getParam("heure_attendue", null)) setParam("heure_attendue", "08:00");
+
+  const nbUsers = db.prepare("SELECT COUNT(*) c FROM utilisateurs").get().c;
+  if (nbUsers === 0) {
+    const u = process.env.ADMIN_USER || "admin", p = process.env.ADMIN_PASSWORD || "ChangeMoi123!";
+    db.prepare("INSERT INTO utilisateurs(nom,identifiant,poste,mdp_hash,role,doit_changer_mdp) VALUES(?,?,?,?,?,1)")
+      .run(process.env.ADMIN_NOM || "Hosiane AYABA", u, "Direction", bcrypt.hashSync(p, 10), "admin");
+    console.log(`Compte administrateur initial créé : identifiant "${u}" — mot de passe "${p}".`);
+    synchroniserTurso(true);
   } else {
-    console.error("Erreur serveur:", err);
+    console.log(`Base de données prête : ${nbUsers} compte(s) utilisateur(s) présent(s).`);
   }
+
+  // Sauvegarde automatique toutes les 15 minutes
+  setInterval(() => synchroniserTurso(false), 15 * 60 * 1000);
+
+  const srv = app.listen(PORT, () => console.log(`Serveur ACH démarré sur le port ${PORT}`));
+  srv.on("error", err => {
+    if (err.code === "EADDRINUSE") {
+      console.log(`Port ${PORT} déjà utilisé, serveur existant conservé.`);
+    } else {
+      console.error("Erreur serveur:", err);
+    }
+  });
+}
+
+demarrer().catch(err => {
+  console.error("Erreur fatale au démarrage du serveur ACH:", err);
 });
