@@ -395,6 +395,18 @@ app.put("/api/utilisateurs/:id", auth, admin, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true });
 });
+app.delete("/api/utilisateurs/:id", auth, admin, (req, res) => {
+  const u = db.prepare("SELECT * FROM utilisateurs WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ erreur: "Introuvable." });
+  if (u.id === req.user.id) return res.status(400).json({ erreur: "Vous ne pouvez pas supprimer votre propre compte administrateur." });
+  db.prepare("DELETE FROM saisies WHERE user_id=?").run(u.id);
+  db.prepare("DELETE FROM connexions WHERE user_id=?").run(u.id);
+  db.prepare("DELETE FROM activites_pc WHERE user_id=?").run(u.id);
+  db.prepare("DELETE FROM validations WHERE user_id=?").run(u.id);
+  db.prepare("DELETE FROM utilisateurs WHERE id=?").run(u.id);
+  synchroniserTurso();
+  res.json({ ok: true });
+});
 app.get("/api/parametres", auth, (req, res) => res.json({ activites: JSON.parse(getParam("activites")), heure_attendue: getParam("heure_attendue") }));
 app.put("/api/parametres", auth, admin, (req, res) => {
   const { activites, heure_attendue } = req.body || {};
