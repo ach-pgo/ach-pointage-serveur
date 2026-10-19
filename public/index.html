@@ -11,22 +11,22 @@ header .who{font-size:13px;opacity:.9}button{font:inherit;cursor:pointer;border:
 .btn.l{background:#fff;color:var(--v);border:1px solid var(--v)}header button{background:rgba(255,255,255,.15);color:#fff}
 nav{display:flex;gap:4px;padding:10px 20px 0;border-bottom:2px solid var(--v);background:#fff}
 nav button{background:transparent;color:var(--g);border-radius:6px 6px 0 0;padding:9px 16px;font-weight:600}
-nav button.on{background:var(--v);color:#fff}main{padding:20px;max-width:1150px;margin:auto}
+nav button.on{background:var(--v);color:#fff}main{padding:20px;max-width:1250px;margin:auto}
 .card{background:#fff;border:1px solid #e4d8ec;border-radius:10px;padding:16px;margin-bottom:16px}
 .card h2{margin:0 0 10px;font-size:15px;color:var(--v)}
-table{border-collapse:collapse;width:100%}th{background:var(--v);color:#fff;font-weight:600;padding:8px;font-size:12.5px;text-align:center}
-td{padding:7px 8px;border-bottom:1px solid #eadff1;vertical-align:top}td.c{text-align:center}tr:hover td{background:#fcfaff}
+table{border-collapse:collapse;width:100%}th{background:var(--v);color:#fff;font-weight:600;padding:8px;font-size:12px;text-align:center}
+td{padding:7px 8px;border-bottom:1px solid #eadff1;vertical-align:middle;font-size:13px}td.c{text-align:center}tr:hover td{background:#fcfaff}
 input,select,textarea{font:inherit;padding:6px 8px;border:1px solid #cdbbd8;border-radius:6px;width:100%;background:#fff}
 input:focus,select:focus,textarea:focus{outline:2px solid var(--o);border-color:var(--o)}
 .mois{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 14px}.mois button{background:var(--vl);color:var(--v);padding:6px 11px;font-weight:600}
 .mois button.on{background:var(--o);color:#fff}.row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 .badge{padding:3px 10px;border-radius:12px;font-weight:700;font-size:12px;display:inline-block}
 .ok{background:#d9f0e0;color:#1e7b3a}.late{background:#fde0c2;color:var(--o)}.wait{background:#eee;color:#666}.val{background:#d9f0e0;color:#1e7b3a}.nval{background:var(--ol);color:var(--o)}
-.big{font-size:30px;font-weight:700;color:var(--o)}.muted{color:var(--g)}.tot td{background:var(--ol);font-weight:700;color:var(--o)}
+.big{font-size:26px;font-weight:700;color:var(--o)}.muted{color:var(--g)}.tot td{background:var(--ol);font-weight:700;color:var(--o)}
 .login{max-width:360px;margin:12vh auto;text-align:center}.login .card{text-align:left}.login label{display:block;margin:10px 0 4px;font-weight:600;color:var(--v)}
 .err{color:#b00020;margin-top:8px;min-height:18px}.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
-.form td{background:var(--ol)}a.x{color:var(--v);cursor:pointer;margin:0 4px;font-size:13px}
-</style></head><body><div id="app"></div>
+.form td{background:var(--ol)}a.x{color:var(--v);cursor:pointer;margin:0 4px;font-size:13px;font-weight:600;text-decoration:underline}
+</style></head><body><div id="app"></div><div id="modal-box"></div>
 <script>
 const $=s=>document.querySelector(s),esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const MOIS=["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
@@ -65,7 +65,6 @@ async function demarrer(){try{me=await api("/me");if(window.ach?.setToken&&token
  const d=me.date;S.annee=+d.slice(0,4);S.mois=+d.slice(5,7);S.uid=me.id;
  if(me.doit_changer_mdp)return vueMdp();
  if(me.role==="employe"&&!sessionStorage.auto){sessionStorage.auto=1;try{await api("/connexion",{method:"POST",body:{type:"auto",pc:window.ach?.pc||"navigateur",heure_pc:window.ach?.demarrage||new Date().toTimeString().slice(0,8)}})}catch{}}
- // Synchroniser les pointages accumulés en attente si existants
  if(window.ach?.lireAttente){try{const f=await window.ach.lireAttente();if((f.connexions&&f.connexions.length)||(f.activites&&f.activites.length)){const s=await api("/sync-offline",{method:"POST",body:f});if(s.ok&&window.ach?.viderAttente)await window.ach.viderAttente();}}catch(e){}}
  tab=me.role==="admin"?"bord":"ts";shell()}
 function vueMdp(){$("#app").innerHTML=hdr()+`<div class="login" style="margin-top:6vh"><div class="card"><h2>Choisissez votre mot de passe</h2><p class="muted">Pour votre sécurité, remplacez le mot de passe provisoire (8 caractères minimum).</p>
@@ -77,13 +76,35 @@ function shell(){const t=me.role==="admin"?[["bord","Tableau de bord"],["ts","Ti
  ({bord:vBord,ts:vTs,pt:vPt,emp:vEmp,par:vPar})[tab]()}
 const badge=s=>`<span class="badge ${s==="Validé"?"val":"nval"}">${esc(s)}</span>`;
 const mm=()=>`${S.annee}-${String(S.mois).padStart(2,"0")}`;
+
 // ----- Tableau de bord
 async function vBord(){const dt=S.jour||me.date;const r=await api("/tableau-de-bord?date="+dt);
  const cl=s=>s==="En retard"?"late":s==="À l'heure"?"ok":"wait";
- $("#m").innerHTML=`<div class="card row"><b style="color:var(--v)">Date consultée</b><input type="date" style="width:170px" value="${r.date}" onchange="S.jour=this.value;vBord()"><span class="muted">Arrivée attendue : ${r.heure_attendue} · mois : ${MOIS[+r.mois.slice(5)-1]} ${r.mois.slice(0,4)}</span></div>
- <div class="card"><table><tr><th style="text-align:left">Employé</th><th>Ordinateur</th><th>Arrivée</th><th>Statut</th><th>Dernière activité</th><th>Inactivité max</th><th>Arrêt / État PC</th><th>Heures jour</th><th>Heures mois</th><th>Mois</th></tr>
- ${r.lignes.map(l=>`<tr><td><b style="color:var(--v)">${esc(l.nom)}</b></td><td class="c muted">${esc(l.pc)}</td><td class="c">${l.arrivee||"—"}</td><td class="c"><span class="badge ${cl(l.statut)}">${l.statut}</span></td><td class="c"><b>${l.derniere_action||"—"}</b></td><td class="c">${l.inactif_minutes>0?`<span style="color:${l.inactif_minutes>=10?'#b00020':'#6f6577'};font-weight:600">${l.inactif_minutes} min</span>`:'—'}</td><td class="c"><span class="badge ${l.heure_arret.startsWith('En service')?'ok':'wait'}">${esc(l.heure_arret)}</span></td><td class="c">${l.heures_jour}</td><td class="c">${l.heures_mois}</td><td class="c">${badge(l.statut_mois)}</td></tr>`).join("")||`<tr><td colspan="10" class="muted">Aucun employé actif. Créez-en dans l'onglet « Employés ».</td></tr>`}
- <tr class="tot"><td>TOTAL</td><td></td><td></td><td></td><td></td><td></td><td></td><td class="c">${r.lignes.reduce((a,l)=>a+l.heures_jour,0)}</td><td class="c">${r.lignes.reduce((a,l)=>a+l.heures_mois,0)}</td><td></td></tr></table></div>`}
+ $("#m").innerHTML=`<div class="card row"><b style="color:var(--v)">Date consultée</b><input type="date" style="width:170px" value="${r.date}" onchange="S.jour=this.value;vBord()"><span class="muted">Arrivée attendue : <b>${r.heure_attendue}</b> · mois : ${MOIS[+r.mois.slice(5)-1]} ${r.mois.slice(0,4)}</span></div>
+ <div class="card" style="overflow-x:auto"><table><tr>
+   <th style="text-align:left">Employé</th><th>Poste PC</th><th>Arrivée</th><th>Départ</th><th>Retard jour</th><th>Cumul retard mois</th><th>État PC</th><th>Présence jour</th><th>Présence mois</th><th>Timesheet mois</th><th>Validation</th>
+ </tr>
+ ${r.lignes.map(l=>`<tr>
+   <td><b style="color:var(--v)">${esc(l.nom)}</b></td>
+   <td class="c muted">${esc(l.pc)}</td>
+   <td class="c"><b>${l.arrivee||"—"}</b></td>
+   <td class="c">${l.depart?`<b>${l.depart}</b>`:'<span class="muted">—</span>'}</td>
+   <td class="c">${l.retard_jour_min>0?`<span class="badge late">${esc(l.retard_jour_texte)}</span>`:(l.arrivee?`<span class="badge ok">À l'heure</span>`:'<span class="muted">—</span>')}</td>
+   <td class="c">${l.retard_mois_min>0?`<b style="color:var(--o)">${esc(l.retard_mois_texte)}</b>`:'<span class="muted">0 min</span>'}</td>
+   <td class="c"><span class="badge ${l.heure_arret&&l.heure_arret.startsWith('En service')?'ok':'wait'}">${esc(l.heure_arret||'—')}</span>${l.inactif_minutes>0?` <span style="color:${l.inactif_minutes>=10?'#b00020':'#6f6577'};font-size:11px">(${l.inactif_minutes}m)</span>`:''}</td>
+   <td class="c" style="font-weight:700;color:var(--v)">${l.heures_presence_jour} h</td>
+   <td class="c" style="font-weight:700;color:var(--v)">${l.heures_presence_mois} h</td>
+   <td class="c">${l.heures_timesheet_mois} h</td>
+   <td class="c">${badge(l.statut_mois)}</td>
+ </tr>`).join("")||`<tr><td colspan="11" class="muted">Aucun employé actif. Créez-en dans l'onglet « Employés ».</td></tr>`}
+ <tr class="tot">
+   <td colspan="7" style="text-align:right">TOTAUX :</td>
+   <td class="c">${Math.round(r.lignes.reduce((a,l)=>a+(l.heures_presence_jour||0),0)*10)/10} h</td>
+   <td class="c">${Math.round(r.lignes.reduce((a,l)=>a+(l.heures_presence_mois||0),0)*10)/10} h</td>
+   <td class="c">${Math.round(r.lignes.reduce((a,l)=>a+(l.heures_timesheet_mois||0),0)*10)/10} h</td>
+   <td></td>
+ </tr></table></div>`}
+
 // ----- Timesheet (employé ou admin)
 async function vTs(){
  if(me.role==="admin"&&!S.empl.length)S.empl=(await api("/utilisateurs")).filter(u=>u.role==="employe"&&u.actif);
@@ -93,8 +114,20 @@ async function vTs(){
  const ar=me.role==="employe"?await api("/aujourdhui"):null;
  S.rows=r.saisies;const total=r.saisies.reduce((a,s)=>a+s.heures,0);
  const dflt=(me.date.slice(0,7)===mm())?me.date:mm()+"-01";
- $("#m").innerHTML=(ar?`<div class="card row"><div><div class="muted">Arrivée du jour (${ar.date.split("-").reverse().join("/")})</div><div class="big">${ar.arrivee||"—"}</div></div>
- <button class="btn o" onclick="commencer()">Je commence</button><span class="muted">Votre heure de connexion est aussi enregistrée automatiquement à l'ouverture de l'application.</span></div>`:"")
+ $("#m").innerHTML=(ar?`<div class="card row" style="gap:24px;flex-wrap:wrap">
+  <div>
+    <div class="muted">Pointage du jour (${ar.date.split("-").reverse().join("/")})</div>
+    <div style="display:flex;gap:20px;align-items:center;margin-top:4px">
+      <div><span class="muted" style="font-size:12px">Arrivée :</span> <span class="big" style="font-size:22px;color:var(--v)">${ar.arrivee||"—"}</span></div>
+      <div><span class="muted" style="font-size:12px">Départ :</span> <span class="big" style="font-size:22px;color:var(--o)">${ar.depart||"—"}</span></div>
+    </div>
+  </div>
+  <div style="display:flex;gap:10px;align-items:center">
+    <button class="btn o" onclick="commencer()">Je commence</button>
+    <button class="btn" style="background:#b00020;color:#fff" onclick="partir()">Fin de journée / Je pars</button>
+  </div>
+  <span class="muted" style="font-size:12px;flex:1">Arrivée et départ enregistrés automatiquement sur votre PC ou manuellement avec ces boutons.</span>
+</div>`:"")
  +`<div class="card"><div class="row">${adm?`<b style="color:var(--v)">Employé</b><select style="width:200px" onchange="S.uid=+this.value;vTs()">${S.empl.map(u=>`<option value="${u.id}" ${u.id===S.uid?"selected":""}>${esc(u.nom)}</option>`).join("")}</select>`:""}
  <b style="color:var(--v)">Année</b><input type="number" style="width:90px" value="${S.annee}" onchange="S.annee=+this.value;vTs()">
  <span style="flex:1"></span>${badge(r.validation.statut)}
@@ -102,24 +135,75 @@ async function vTs(){
  <button class="btn l" onclick="telecharger('/export/pdf?user_id=${S.uid}&mois=${mm()}','Timesheet_${mm()}.pdf')">PDF du mois</button>
  <button class="btn l" onclick="telecharger('/export/excel?user_id=${S.uid}&annee=${S.annee}','Timesheet_${S.annee}.xlsx')">Excel (12 mois)</button></div>
  <div class="mois">${MOIS.map((n,i)=>`<button class="${i+1===S.mois?"on":""}" onclick="S.mois=${i+1};vTs()">${n}</button>`).join("")}</div>
- <table><tr><th>Date</th><th>Arrivée</th><th>Activité</th><th>Client / Contact</th><th>Tâche</th><th>Description</th><th>Heures</th><th></th></tr>
+ <table><tr><th>Date</th><th>Arrivée</th><th>Activité</th><th>Client / Contact</th><th>Tâche</th><th>Description</th><th>Heures</th><th>Actions</th></tr>
  ${lock?"":`<tr class="form"><td><input type="date" id="fd" value="${dflt}"></td><td class="c muted">auto</td><td><select id="fa">${me.activites.map(a=>`<option>${esc(a)}</option>`).join("")}</select></td><td><input id="fc"></td><td><input id="ft"></td><td><textarea id="fx" rows="1"></textarea></td><td><input id="fh" style="width:70px" placeholder="0"></td><td><button class="btn o" onclick="ajouter()">Ajouter</button></td></tr>`}
- ${r.saisies.map(s=>`<tr><td class="c">${s.date.split("-").reverse().join("/")}</td><td class="c" style="color:var(--v);font-weight:700">${s.arrivee||"—"}</td><td>${esc(s.activite)}</td><td>${esc(s.client)}</td><td>${esc(s.tache)}</td><td>${esc(s.description)}</td><td class="c">${s.heures}</td><td>${lock?"":`<a class="x" onclick="modifier(${s.id})">modifier</a><a class="x" style="color:#b00020" onclick="suppr(${s.id})">suppr.</a>`}</td></tr>`).join("")}
- <tr class="tot"><td colspan="6" style="text-align:right">TOTAL ${MOIS[S.mois-1].toUpperCase()}</td><td class="c">${total}</td><td></td></tr></table>
- ${lock?`<p class="muted">Ce mois est validé par la direction : il n'est plus modifiable.</p>`:""}</div>`}
+ ${r.saisies.map(s=>{
+   const isToday = s.date === me.date;
+   const canEdit = adm || (!lock && isToday);
+   return `<tr>
+     <td class="c">${s.date.split("-").reverse().join("/")}</td>
+     <td class="c" style="color:var(--v);font-weight:700">${s.arrivee||"—"}</td>
+     <td>${esc(s.activite)}</td>
+     <td>${esc(s.client)}</td>
+     <td>${esc(s.tache)}</td>
+     <td>${esc(s.description)}</td>
+     <td class="c">${s.heures}</td>
+     <td class="c">${canEdit?`<a class="x" onclick="modalModifSaisie(${s.id})">modifier</a><a class="x" style="color:#b00020" onclick="suppr(${s.id})">suppr.</a>`:`<span class="muted" title="Verrouillé (jour passé)">🔒</span>`}</td>
+   </tr>`;
+ }).join("")}
+ <tr class="tot"><td colspan="6" style="text-align:right">TOTAL TIMESHEET ${MOIS[S.mois-1].toUpperCase()}</td><td class="c">${Math.round(total*10)/10}</td><td></td></tr></table>
+ ${lock?`<p class="muted">Ce mois est validé par la direction : il n'est plus modifiable.</p>`:(!adm?`<p class="muted" style="font-size:12px;margin-top:8px">ℹ️ Vous pouvez modifier ou supprimer vos saisies du jour même. Les jours précédents sont verrouillés pour préserver l'historique.</p>`:"")}</div>`}
+
 async function commencer(){await api("/connexion",{method:"POST",body:{type:"manuel",pc:window.ach?.pc||"navigateur"}});vTs()}
+async function partir(){if(!confirm("Confirmez-vous l'enregistrement de votre fin de journée ?"))return;try{await api("/depart",{method:"POST",body:{pc:window.ach?.pc||"navigateur"}});vTs()}catch(e){alert(e.message)}}
 async function ajouter(){try{await api("/saisies",{method:"POST",body:{user_id:S.uid,date:$("#fd").value,activite:$("#fa").value,client:$("#fc").value,tache:$("#ft").value,description:$("#fx").value,heures:$("#fh").value||0}});
  const d=$("#fd").value;if(d)S.mois=+d.slice(5,7),S.annee=+d.slice(0,4);vTs()}catch(e){alert(e.message)}}
-async function modifier(id){const s=S.rows.find(x=>x.id===id);const h=prompt("Heures",s.heures);if(h===null)return;const c=prompt("Client / Contact",s.client);if(c===null)return;const t=prompt("Tâche",s.tache);if(t===null)return;const x=prompt("Description",s.description);if(x===null)return;
- try{await api("/saisies/"+s.id,{method:"PUT",body:{date:s.date,activite:s.activite,client:c,tache:t,description:x,heures:h}});vTs()}catch(e){alert(e.message)}}
+
+function modalModifSaisie(id){
+ const s=S.rows.find(x=>x.id===id);if(!s)return;
+ const acts=(me.activites&&me.activites.length?me.activites:["Mission","Administratif","Formation","Autre"]);
+ $("#modal-box").innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999">
+  <div style="background:#fff;padding:24px;border-radius:12px;width:420px;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.25)">
+    <h3 style="margin-top:0;color:var(--v)">Modifier la saisie</h3>
+    <p class="muted" style="font-size:12px">Date : <b>${s.date.split("-").reverse().join("/")}</b></p>
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Activité</label>
+    <select id="m-act" style="margin-top:4px">${acts.map(a=>`<option ${a===s.activite?"selected":""}>${esc(a)}</option>`).join("")}</select>
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Client / Contact</label>
+    <input id="m-cli" style="margin-top:4px" value="${esc(s.client||"")}">
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Tâche</label>
+    <input id="m-tac" style="margin-top:4px" value="${esc(s.tache||"")}">
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Description</label>
+    <textarea id="m-des" rows="2" style="margin-top:4px">${esc(s.description||"")}</textarea>
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Nombre d'heures</label>
+    <input id="m-heu" type="number" step="0.25" style="margin-top:4px;width:120px" value="${s.heures}">
+    <div id="m-err" class="err" style="margin:8px 0"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="$('#modal-box').innerHTML=''">Annuler</button>
+      <button class="btn" style="padding:8px 14px" onclick="validerModifSaisie(${s.id})">Enregistrer</button>
+    </div>
+  </div>
+ </div>`;
+}
+
+async function validerModifSaisie(id){
+ const s=S.rows.find(x=>x.id===id);if(!s)return;
+ const act=$("#m-act").value,cli=$("#m-cli").value,tac=$("#m-tac").value,des=$("#m-des").value,heu=parseFloat($("#m-heu").value)||0;
+ try{
+   await api("/saisies/"+id,{method:"PUT",body:{date:s.date,activite:act,client:cli,tache:tac,description:des,heures:heu}});
+   $("#modal-box").innerHTML="";vTs();
+ }catch(e){$("#m-err").textContent=e.message}
+}
+
 async function suppr(id){if(!confirm("Supprimer cette ligne ?"))return;try{await api("/saisies/"+id,{method:"DELETE"});vTs()}catch(e){alert(e.message)}}
 async function valider(st){await api("/validation",{method:"POST",body:{user_id:S.uid,mois:mm(),statut:st}});vTs()}
+
 // ----- Pointages
 async function vPt(){const r=await api("/connexions?mois="+mm());
  $("#m").innerHTML=`<div class="card"><div class="row"><b style="color:var(--v)">Année</b><input type="number" style="width:90px" value="${S.annee}" onchange="S.annee=+this.value;vPt()"></div>
  <div class="mois">${MOIS.map((n,i)=>`<button class="${i+1===S.mois?"on":""}" onclick="S.mois=${i+1};vPt()">${n}</button>`).join("")}</div>
  <table><tr><th>Date</th><th>Heure (serveur)</th><th>Employé</th><th>Type</th><th>Ordinateur</th><th>Heure du PC</th></tr>
  ${r.map(c=>`<tr><td class="c">${c.date.split("-").reverse().join("/")}</td><td class="c"><b>${c.heure}</b></td><td>${esc(c.nom)}</td><td class="c">${c.type==="auto"?"Automatique":"Bouton « Je commence »"}</td><td>${esc(c.pc)}</td><td class="c muted">${esc(c.heure_pc)}</td></tr>`).join("")||`<tr><td colspan="6" class="muted">Aucun pointage ce mois-ci.</td></tr>`}</table></div>`}
+
 // ----- Employés
 async function vEmp(){const u=await api("/utilisateurs");
  $("#m").innerHTML=`<div class="card"><h2>Créer un compte employé</h2><div class="grid"><input id="cn" placeholder="Nom complet"><input id="ci" placeholder="Identifiant (ex. doriane)"><input id="cp" placeholder="Poste"><input id="cm" placeholder="Mot de passe provisoire (8 car. min.)"></div>
@@ -128,11 +212,12 @@ async function vEmp(){const u=await api("/utilisateurs");
  ${u.map(x=>`<tr><td><b>${esc(x.nom)}</b></td><td class="c">${esc(x.identifiant)}</td><td class="c">${esc(x.poste)}</td><td class="c">${x.role==="admin"?"Administratrice":"Employé"}</td><td class="c"><span class="badge ${x.actif?"ok":"wait"}">${x.actif?"Actif":"Désactivé"}</span></td>
   <td><a class="x" onclick="modalMdp(${x.id},'${esc(x.nom)}')">nouveau mot de passe</a>${x.id!==me.id?`<a class="x" onclick="bascule(${x.id},${!x.actif})">${x.actif?"désactiver":"réactiver"}</a><a class="x" style="color:#b00020" onclick="modalSuppr(${x.id},'${esc(x.nom)}')">supprimer</a>`:""}</td></tr>`).join("")}</table></div>`}
 async function creer(){try{await api("/utilisateurs",{method:"POST",body:{nom:$("#cn").value,identifiant:$("#ci").value,poste:$("#cp").value,mdp:$("#cm").value}});S.empl=[];vEmp()}catch(e){$("#e").textContent=e.message}}
-function modalMdp(id,nom){let m=document.getElementById("modal-mdp-box");if(!m){m=document.createElement("div");m.id="modal-mdp-box";document.body.appendChild(m)}m.innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999"><div style="background:#fff;padding:24px;border-radius:12px;width:340px;box-shadow:0 10px 30px rgba(0,0,0,0.25)"><h3 style="margin-top:0;color:var(--v)">Nouveau mot de passe</h3><p class="muted" style="font-size:13px">Pour : <b>${esc(nom)}</b></p><label style="font-size:13px;font-weight:bold">Mot de passe provisoire (min. 8 car.) :</label><input id="modal-inp-mdp" type="text" style="width:100%;box-sizing:border-box;margin:8px 0 12px;padding:8px;border:1px solid #ccc;border-radius:6px" placeholder="ex. Ach2026!"><div id="modal-err" class="err" style="margin-bottom:8px"></div><div style="display:flex;justify-content:flex-end;gap:8px"><button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="document.getElementById('modal-mdp-box').innerHTML=''">Annuler</button><button class="btn" style="padding:8px 14px" onclick="validerModalMdp(${id})">Enregistrer</button></div></div></div>`}
-async function validerModalMdp(id){const m=document.getElementById("modal-inp-mdp").value.trim();if(m.length<8){document.getElementById("modal-err").textContent="Le mot de passe doit comporter au moins 8 caractères.";return}try{await api("/utilisateurs/"+id,{method:"PUT",body:{mdp:m}});document.getElementById("modal-mdp-box").innerHTML="";alert("Mot de passe mis à jour avec succès !")}catch(e){document.getElementById("modal-err").textContent=e.message}}
+function modalMdp(id,nom){$("#modal-box").innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999"><div style="background:#fff;padding:24px;border-radius:12px;width:340px;box-shadow:0 10px 30px rgba(0,0,0,0.25)"><h3 style="margin-top:0;color:var(--v)">Nouveau mot de passe</h3><p class="muted" style="font-size:13px">Pour : <b>${esc(nom)}</b></p><label style="font-size:13px;font-weight:bold">Mot de passe provisoire (min. 8 car.) :</label><input id="modal-inp-mdp" type="text" style="width:100%;box-sizing:border-box;margin:8px 0 12px;padding:8px;border:1px solid #ccc;border-radius:6px" placeholder="ex. Ach2026!"><div id="modal-err" class="err" style="margin-bottom:8px"></div><div style="display:flex;justify-content:flex-end;gap:8px"><button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="$('#modal-box').innerHTML=''">Annuler</button><button class="btn" style="padding:8px 14px" onclick="validerModalMdp(${id})">Enregistrer</button></div></div></div>`}
+async function validerModalMdp(id){const m=$("#modal-inp-mdp").value.trim();if(m.length<8){$("#modal-err").textContent="Le mot de passe doit comporter au moins 8 caractères.";return}try{await api("/utilisateurs/"+id,{method:"PUT",body:{mdp:m}});$("#modal-box").innerHTML="";alert("Mot de passe mis à jour avec succès !")}catch(e){$("#modal-err").textContent=e.message}}
 async function bascule(id,a){await api("/utilisateurs/"+id,{method:"PUT",body:{actif:a}});S.empl=[];vEmp()}
-function modalSuppr(id,nom){let m=document.getElementById("modal-mdp-box");if(!m){m=document.createElement("div");m.id="modal-mdp-box";document.body.appendChild(m)}m.innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999"><div style="background:#fff;padding:24px;border-radius:12px;width:340px;box-shadow:0 10px 30px rgba(0,0,0,0.25)"><h3 style="margin-top:0;color:#b00020">Supprimer l'employé</h3><p style="font-size:14px">Voulez-vous vraiment supprimer définitivement <b>${esc(nom)}</b> ?</p><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="document.getElementById('modal-mdp-box').innerHTML=''">Annuler</button><button style="background:#b00020;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:bold" onclick="confirmerSuppr(${id})">Supprimer</button></div></div></div>`}
-async function confirmerSuppr(id){try{await api("/utilisateurs/"+id,{method:"DELETE"});document.getElementById("modal-mdp-box").innerHTML="";S.empl=[];vEmp()}catch(e){alert(e.message)}}
+function modalSuppr(id,nom){$("#modal-box").innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999"><div style="background:#fff;padding:24px;border-radius:12px;width:340px;box-shadow:0 10px 30px rgba(0,0,0,0.25)"><h3 style="margin-top:0;color:#b00020">Supprimer l'employé</h3><p style="font-size:14px">Voulez-vous vraiment supprimer définitivement <b>${esc(nom)}</b> ?</p><div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="$('#modal-box').innerHTML=''">Annuler</button><button style="background:#b00020;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:bold" onclick="confirmerSuppr(${id})">Supprimer</button></div></div></div>`}
+async function confirmerSuppr(id){try{await api("/utilisateurs/"+id,{method:"DELETE"});$("#modal-box").innerHTML="";S.empl=[];vEmp()}catch(e){alert(e.message)}}
+
 // ----- Paramètres
 async function vPar(){const p=await api("/parametres");
  $("#m").innerHTML=`<div class="card"><h2>Paramètres</h2><label><b>Heure d'arrivée attendue</b></label><input type="time" id="ha" value="${p.heure_attendue}" style="width:140px">
