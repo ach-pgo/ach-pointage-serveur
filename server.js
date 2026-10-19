@@ -209,10 +209,118 @@ app.post("/api/connexion", auth, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true, arrivee: arrivee(req.user.id, n.date) });
 });
-const arrivee = (uid, date) => hhmm(db.prepare("SELECT MIN(heure) h FROM connexions WHERE user_id=? AND date=?").get(uid, date).h);
+const arrivee = (uid, date) => hhmm(db.prepare("SELECT MIN(heure) h FROM connexions WHERE user_id=? AND date=? AND type != 'depart'").get(uid, date)?.h);
+const depart = (uid, date) => {
+  const rowDep = db.prepare("SELECT MAX(heure) h FROM connexions WHERE user_id=? AND date=? AND type='depart'").get(uid, date);
+  if (rowDep && rowDep.h) return hhmm(rowDep.h);
+  const rowAct = db.prepare("SELECT heure_arret, heure_dernier_signal, arret_detecte FROM activites_pc WHERE user_id=? AND date=?").get(uid, date);
+  if (rowAct && rowAct.arret_detecte && rowAct.heure_arret) return hhmm(rowAct.heure_arret);
+  return null;
+};
+
+function calculerMinutesRetard(heureArr, heureAttendue) {
+  if (!heureArr || !heureAttendue) return 0;
+  const [hA, mA] = heureArr.slice(0, 5).split(":").map(Number);
+  const [hAtt, mAtt] = heureAttendue.slice(0, 5).split(":").map(Number);
+  const diffMin = (hA * 60 + mA) - (hAtt * 60 + mAtt);
+  return diffMin > 0 ? diffMin : 0;
+}
+
+function formaterDuree(minutes) {
+  if (!minutes || minutes <= 0) return "0 min";
+  const h = Math.floor(minutes / 60);
+  const m = Math.round(minutes % 60);
+  if (h === 0) return `${m} min`;
+  if (m === 0) return `${h} h`;
+  return `${h} h ${m} min`;
+}
+
+function retardCumuleMois(uid, mois, heureAttendue) {
+  const [a, b] = borne(mois);
+  const jours = db.prepare(`
+    SELECT date, MIN(heure) h
+    FROM connexions
+    WHERE user_id=? AND date BETWEEN ? AND ? AND type != 'depart'
+    GROUP BY date
+  `).all(uid, a, b);
+
+  let totalRetardMin = 0;
+  for (const j of jours) {
+    totalRetardMin += calculerMinutesRetard(j.h, heureAttendue);
+  }
+  return totalRetardMin;
+}
+
+function calculerMinutesPresence(heureArr, heureDep) {
+  if (!heureArr || !heureDep) return 0;
+  const [hA, mA] = heureArr.slice(0, 5).split(":").map(Number);
+  const [hD, mD] = heureDep.slice(0, 5).split(":").map(Number);
+  const diff = (hD * 60 + mD) - (hA * 60 + mA);
+  return diff > 0 ? diff : 0;
+}
+
+function heuresPresenceJour(uid, date) {
+  const arr = arrivee(uid, date);
+  if (!arr) return 0;
+  let dep = depart(uid, date);
+  if (!dep && date === maintenantLocal().date) {
+    dep = maintenantLocal().heure;
+  }
+  const min = calculerMinutesPresence(arr, dep);
+  return Math.round((min / 60) * 10) / 10;
+}
+
+function heuresPresenceMois(uid, mois) {
+  const [a, b] = borne(mois);
+  const today = maintenantLocal().date;
+  const rows = db.prepare(`
+    SELECT c.date, MIN(c.heure) arr,
+           (SELECT MAX(c2.heure) FROM connexions c2 WHERE c2.user_id=c.user_id AND c2.date=c.date AND c2.type='depart') dep_manuel,
+           act.heure_arret, act.heure_dernier_signal, act.arret_detecte
+    FROM connexions c
+    LEFT JOIN activites_pc act ON act.user_id=c.user_id AND act.date=c.date
+    WHERE c.user_id=? AND c.date BETWEEN ? AND ? AND c.type != 'depart'
+    GROUP BY c.date
+  `).all(uid, a, b);
+
+  let totalMin = 0;
+  for (const r of rows) {
+    let dep = r.dep_manuel;
+    if (!dep && r.arret_detecte && r.heure_arret) dep = r.heure_arret;
+    if (!dep && r.date === today) {
+      dep = maintenantLocal().heure;
+    } else if (!dep && r.heure_dernier_signal) {
+      dep = r.heure_dernier_signal;
+    }
+    totalMin += calculerMinutesPresence(r.arr, dep);
+  }
+  return Math.round((totalMin / 60) * 10) / 10;
+}
+
+app.post("/api/depart", auth, (req, res) => {
+  const n = maintenantLocal(), ts = Date.now();
+  db.prepare("INSERT INTO connexions(user_id,date,heure,type,pc,heure_pc,ts) VALUES(?,?,?,?,?,?,?)")
+    .run(req.user.id, n.date, n.heure, "depart", String(req.body?.pc || "").slice(0, 80), String(req.body?.heure_pc || "").slice(0, 40), ts);
+
+  const existAct = db.prepare("SELECT id FROM activites_pc WHERE user_id=? AND date=?").get(req.user.id, n.date);
+  if (existAct) {
+    db.prepare("UPDATE activites_pc SET arret_detecte=1, heure_arret=?, ts_maj=? WHERE id=?").run(n.heure, ts, existAct.id);
+  } else {
+    db.prepare("INSERT INTO activites_pc(user_id,date,pc,heure_debut,heure_dernier_signal,derniere_action,arret_detecte,heure_arret,ts_maj) VALUES(?,?,?,?,?,?,?,?,?)")
+      .run(req.user.id, n.date, String(req.body?.pc || "").slice(0, 80), n.heure, n.heure, "Départ enregistré", 1, n.heure, ts);
+  }
+  synchroniserTurso();
+  res.json({ ok: true, depart: hhmm(n.heure) });
+});
+
 app.get("/api/aujourdhui", auth, (req, res) => {
   const n = maintenantLocal();
-  res.json({ date: n.date, arrivee: arrivee(req.user.id, n.date), connexions: db.prepare("SELECT heure,type,pc FROM connexions WHERE user_id=? AND date=? ORDER BY heure").all(req.user.id, n.date) });
+  res.json({
+    date: n.date,
+    arrivee: arrivee(req.user.id, n.date),
+    depart: depart(req.user.id, n.date),
+    connexions: db.prepare("SELECT heure,type,pc FROM connexions WHERE user_id=? AND date=? ORDER BY heure").all(req.user.id, n.date)
+  });
 });
 app.get("/api/connexions", auth, (req, res) => {
   const u = cible(req); if (!u) return res.status(403).json({ erreur: "Accès refusé." });
@@ -343,6 +451,13 @@ function saisieAutorisee(req, res) {
   const s = db.prepare("SELECT * FROM saisies WHERE id=?").get(req.params.id);
   if (!s || (s.user_id !== req.user.id && req.user.role !== "admin")) { res.status(404).json({ erreur: "Introuvable." }); return null; }
   if (verrou(req, s.user_id, s.date)) { res.status(423).json({ erreur: "Ce mois est validé : modification impossible." }); return null; }
+  if (req.user.role !== "admin") {
+    const today = maintenantLocal().date;
+    if (s.date !== today) {
+      res.status(403).json({ erreur: "Les employés peuvent modifier ou supprimer une saisie uniquement le jour même (" + today.split("-").reverse().join("/") + "). Pour une date antérieure, contactez l'administratrice." });
+      return null;
+    }
+  }
   return s;
 }
 app.put("/api/saisies/:id", auth, (req, res) => {
@@ -415,24 +530,43 @@ app.put("/api/parametres", auth, admin, (req, res) => {
 });
 app.get("/api/tableau-de-bord", auth, admin, (req, res) => {
   const date = dateValide(req.query.date) ? req.query.date : maintenantLocal().date, mois = date.slice(0, 7), [a, b] = borne(mois);
-  const att = getParam("heure_attendue"), acts = JSON.parse(getParam("activites"));
+  const att = getParam("heure_attendue") || "08:00", acts = JSON.parse(getParam("activites") || "[]");
   const lignes = db.prepare("SELECT * FROM utilisateurs WHERE actif=1 AND role='employe' ORDER BY nom").all().map(u => {
     const ar = arrivee(u.id, date);
+    const dep = depart(u.id, date);
     const act = db.prepare("SELECT * FROM activites_pc WHERE user_id=? AND date=?").get(u.id, date);
     const somme = (extra, ...p) => db.prepare(`SELECT COALESCE(SUM(heures),0) h FROM saisies WHERE user_id=? ${extra}`).get(u.id, ...p).h;
-    
-    // Calcul inactivité en minutes
+
     const inactifMin = act ? Math.round((act.inactif_secondes || 0) / 60) : 0;
-    
+    const retMinJour = ar ? calculerMinutesRetard(ar, att) : 0;
+    const retMinMois = retardCumuleMois(u.id, mois, att);
+    const presJour = heuresPresenceJour(u.id, date);
+    const presMois = heuresPresenceMois(u.id, mois);
+    const tsJour = somme("AND date=?", date);
+    const tsMois = somme("AND date BETWEEN ? AND ?", a, b);
+
     return {
-      id: u.id, nom: u.nom, arrivee: ar, statut: !ar ? "Pas encore connecté(e)" : ar > att ? "En retard" : "À l'heure",
-      heures_jour: somme("AND date=?", date), heures_mois: somme("AND date BETWEEN ? AND ?", a, b),
+      id: u.id,
+      nom: u.nom,
+      arrivee: ar,
+      depart: dep,
+      statut: !ar ? "Pas encore connecté(e)" : ar > att ? "En retard" : "À l'heure",
+      retard_jour_min: retMinJour,
+      retard_jour_texte: ar ? (retMinJour > 0 ? formaterDuree(retMinJour) : "À l'heure") : "—",
+      retard_mois_min: retMinMois,
+      retard_mois_texte: formaterDuree(retMinMois),
+      heures_jour: presJour,
+      heures_mois: presMois,
+      heures_presence_jour: presJour,
+      heures_presence_mois: presMois,
+      heures_timesheet_jour: tsJour,
+      heures_timesheet_mois: tsMois,
       par_activite: Object.fromEntries(acts.map(x => [x, somme("AND date BETWEEN ? AND ? AND activite=?", a, b, x)])),
       statut_mois: statutMois(u.id, mois).statut,
       pc: act?.pc || "—",
       derniere_action: act?.derniere_action || act?.heure_dernier_signal || "—",
       inactif_minutes: inactifMin,
-      heure_arret: act?.arret_detecte ? (act.heure_arret || act.heure_dernier_signal) : (act?.heure_dernier_signal ? `En service (${act.heure_dernier_signal})` : "—")
+      heure_arret: dep ? dep : (act?.arret_detecte ? (act.heure_arret || act.heure_dernier_signal) : (act?.heure_dernier_signal ? `En service (${act.heure_dernier_signal})` : "—"))
     };
   });
   res.json({ date, mois, heure_attendue: att, activites: acts, lignes });
