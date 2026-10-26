@@ -184,7 +184,7 @@ function cible(req) {
   if (id !== req.user.id && req.user.role !== "admin") return null;
   return db.prepare("SELECT * FROM utilisateurs WHERE id=?").get(id);
 }
-const publicUser = u => ({ id: u.id, nom: u.nom, identifiant: u.identifiant, poste: u.poste, role: u.role, actif: !!u.actif, doit_changer_mdp: !!u.doit_changer_mdp });
+const publicUser = u => ({ id: u.id, nom: u.nom, identifiant: u.identifiant, poste: u.poste, role: u.role, actif: !!u.actif, doit_changer_mdp: !!u.doit_changer_mdp, rattrapage_actif: !!u.rattrapage_actif });
 
 app.get("/api/me", auth, (req, res) => res.json({ ...publicUser(req.user), ...maintenantLocal(), activites: JSON.parse(getParam("activites")), heure_attendue: getParam("heure_attendue") }));
 app.post("/api/mon-mot-de-passe", auth, (req, res) => {
@@ -195,6 +195,7 @@ app.post("/api/mon-mot-de-passe", auth, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true });
 });
+
 
 // ---------- pointage
 app.post("/api/connexion", auth, (req, res) => {
@@ -417,6 +418,7 @@ app.post("/api/activite-pc", auth, (req, res) => {
   res.json({ ok: true });
 });
 
+
 // ---------- saisies (timesheet)
 const statutMois = (uid, mois) => (db.prepare("SELECT * FROM validations WHERE user_id=? AND mois=?").get(uid, mois) || { statut: "Non validé" });
 function saisiesMois(uid, mois) {
@@ -452,9 +454,10 @@ function saisieAutorisee(req, res) {
   if (!s || (s.user_id !== req.user.id && req.user.role !== "admin")) { res.status(404).json({ erreur: "Introuvable." }); return null; }
   if (verrou(req, s.user_id, s.date)) { res.status(423).json({ erreur: "Ce mois est validé : modification impossible." }); return null; }
   if (req.user.role !== "admin") {
+    const u = db.prepare("SELECT * FROM utilisateurs WHERE id=?").get(req.user.id);
     const today = maintenantLocal().date;
-    if (s.date !== today) {
-      res.status(403).json({ erreur: "Les employés peuvent modifier ou supprimer une saisie uniquement le jour même (" + today.split("-").reverse().join("/") + "). Pour une date antérieure, contactez l'administratrice." });
+    if (s.date !== today && !u?.rattrapage_actif) {
+      res.status(403).json({ erreur: "Les employés peuvent modifier ou supprimer une saisie uniquement le jour même (" + today.split("-").reverse().join("/") + "). Pour une date antérieure, demandez à l'administratrice d'activer le mode rattrapage." });
       return null;
     }
   }
@@ -468,12 +471,14 @@ app.put("/api/saisies/:id", auth, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true });
 });
+
 app.delete("/api/saisies/:id", auth, (req, res) => {
   const s = saisieAutorisee(req, res); if (!s) return;
   db.prepare("DELETE FROM saisies WHERE id=?").run(s.id);
   synchroniserTurso();
   res.json({ ok: true });
 });
+
 
 // ---------- administration
 app.post("/api/validation", auth, admin, (req, res) => {
@@ -484,6 +489,46 @@ app.post("/api/validation", auth, admin, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true });
 });
+
+
+// Régularisation manuelle d'un pointage passé par l'administrateur
+app.post("/api/regularisation-pointage", auth, admin, (req, res) => {
+  const { user_id, date, arrivee, depart, motif = "" } = req.body || {};
+  if (!dateValide(date)) return res.status(400).json({ erreur: "Date invalide (format AAAA-MM-JJ)." });
+  const u = db.prepare("SELECT * FROM utilisateurs WHERE id=?").get(user_id);
+  if (!u) return res.status(404).json({ erreur: "Employé introuvable." });
+
+  const heureValide = h => /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test((h || "").trim());
+
+  // 1. Régularisation Arrivée
+  if (arrivee && heureValide(arrivee)) {
+    const hArr = arrivee.trim().slice(0, 5) + ":00";
+    db.prepare("DELETE FROM connexions WHERE user_id=? AND date=? AND type != 'depart'").run(u.id, date);
+    db.prepare("INSERT INTO connexions(user_id, date, heure, type, pc, heure_pc, ts) VALUES(?,?,?,'regularisation_admin','manuel',?,?)")
+      .run(u.id, date, hArr, hArr, Date.now());
+  }
+
+  // 2. Régularisation Départ
+  if (depart && heureValide(depart)) {
+    const hDep = depart.trim().slice(0, 5) + ":00";
+    db.prepare("DELETE FROM connexions WHERE user_id=? AND date=? AND type = 'depart'").run(u.id, date);
+    db.prepare("INSERT INTO connexions(user_id, date, heure, type, pc, heure_pc, ts) VALUES(?,?,?,'depart','manuel',?,?)")
+      .run(u.id, date, hDep, hDep, Date.now());
+
+    const act = db.prepare("SELECT id FROM activites_pc WHERE user_id=? AND date=?").get(u.id, date);
+    if (act) {
+      db.prepare("UPDATE activites_pc SET heure_arret=?, arret_detecte=1, heure_dernier_signal=?, ts_maj=? WHERE id=?")
+        .run(hDep, hDep, Date.now(), act.id);
+    } else {
+      db.prepare("INSERT INTO activites_pc(user_id, date, pc, heure_debut, heure_dernier_signal, derniere_action, inactif_secondes, arret_detecte, heure_arret, ts_maj) VALUES(?,?,?,?,'regularisation',0,1,?,?)")
+        .run(u.id, date, "manuel", hDep, hDep, hDep, Date.now());
+    }
+  }
+
+  synchroniserTurso();
+  res.json({ ok: true });
+});
+
 app.get("/api/utilisateurs", auth, admin, (req, res) => res.json(db.prepare("SELECT * FROM utilisateurs ORDER BY role,nom").all().map(publicUser)));
 app.post("/api/utilisateurs", auth, admin, (req, res) => {
   const { nom = "", identifiant = "", poste = "", mdp = "", role = "employe" } = req.body || {};
@@ -509,6 +554,16 @@ app.put("/api/utilisateurs/:id", auth, admin, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true });
 });
+
+app.put("/api/utilisateurs/:id/rattrapage", auth, admin, (req, res) => {
+  const u = db.prepare("SELECT * FROM utilisateurs WHERE id=?").get(req.params.id);
+  if (!u) return res.status(404).json({ erreur: "Employé introuvable." });
+  const actif = req.body.rattrapage_actif ? 1 : 0;
+  db.prepare("UPDATE utilisateurs SET rattrapage_actif=? WHERE id=?").run(actif, u.id);
+  synchroniserTurso();
+  res.json({ ok: true, rattrapage_actif: Boolean(actif) });
+});
+
 app.delete("/api/utilisateurs/:id", auth, admin, (req, res) => {
   const u = db.prepare("SELECT * FROM utilisateurs WHERE id=?").get(req.params.id);
   if (!u) return res.status(404).json({ erreur: "Introuvable." });
@@ -521,6 +576,7 @@ app.delete("/api/utilisateurs/:id", auth, admin, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true });
 });
+
 app.get("/api/parametres", auth, (req, res) => res.json({ activites: JSON.parse(getParam("activites")), heure_attendue: getParam("heure_attendue") }));
 app.put("/api/parametres", auth, admin, (req, res) => {
   const { activites, heure_attendue } = req.body || {};
@@ -676,6 +732,8 @@ async function demarrer() {
     arret_detecte INTEGER DEFAULT 0, heure_arret TEXT DEFAULT '', ts_maj INTEGER NOT NULL);
   CREATE INDEX IF NOT EXISTS idx_actpc ON activites_pc(user_id, date);
   `);
+
+  try { db.prepare("ALTER TABLE utilisateurs ADD COLUMN rattrapage_actif INTEGER DEFAULT 0").run(); } catch {}
 
   if (!getParam("activites", null)) setParam("activites", JSON.stringify(["Deméya Service Conseil", "EHPAD Invest", "Autre"]));
   if (!getParam("heure_attendue", null)) setParam("heure_attendue", "08:00");
