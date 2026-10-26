@@ -79,16 +79,17 @@ const mm=()=>`${S.annee}-${String(S.mois).padStart(2,"0")}`;
 
 // ----- Tableau de bord
 async function vBord(){const dt=S.jour||me.date;const r=await api("/tableau-de-bord?date="+dt);
+ if(!S.empl.length)S.empl=(await api("/utilisateurs")).filter(u=>u.role==="employe"&&u.actif);
  const cl=s=>s==="En retard"?"late":s==="À l'heure"?"ok":"wait";
- $("#m").innerHTML=`<div class="card row"><b style="color:var(--v)">Date consultée</b><input type="date" style="width:170px" value="${r.date}" onchange="S.jour=this.value;vBord()"><span class="muted">Arrivée attendue : <b>${r.heure_attendue}</b> · mois : ${MOIS[+r.mois.slice(5)-1]} ${r.mois.slice(0,4)}</span></div>
+ $("#m").innerHTML=`<div class="card row" style="justify-content:space-between"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><b style="color:var(--v)">Date consultée</b><input type="date" style="width:170px" value="${r.date}" onchange="S.jour=this.value;vBord()"><span class="muted">Arrivée attendue : <b>${r.heure_attendue}</b> · mois : ${MOIS[+r.mois.slice(5)-1]} ${r.mois.slice(0,4)}</span></div><button class="btn o" onclick="modalRegularisation(null,'${r.date}')">⏱️ Régulariser un pointage</button></div>
  <div class="card" style="overflow-x:auto"><table><tr>
    <th style="text-align:left">Employé</th><th>Poste PC</th><th>Arrivée</th><th>Départ</th><th>Retard jour</th><th>Cumul retard mois</th><th>État PC</th><th>Présence jour</th><th>Présence mois</th><th>Timesheet mois</th><th>Validation</th>
  </tr>
  ${r.lignes.map(l=>`<tr>
    <td><b style="color:var(--v)">${esc(l.nom)}</b></td>
    <td class="c muted">${esc(l.pc)}</td>
-   <td class="c"><b>${l.arrivee||"—"}</b></td>
-   <td class="c">${l.depart?`<b>${l.depart}</b>`:'<span class="muted">—</span>'}</td>
+   <td class="c"><b>${l.arrivee||"—"}</b> <a class="x" title="Régulariser l'arrivée" onclick="modalRegularisation(${l.id},'${r.date}','${l.arrivee==='—'?'':l.arrivee}','${l.depart==='—'?'':l.depart}')" style="font-size:11px">✏️</a></td>
+   <td class="c">${l.depart?`<b>${l.depart}</b>`:'<span class="muted">—</span>'} <a class="x" title="Régulariser le départ" onclick="modalRegularisation(${l.id},'${r.date}','${l.arrivee==='—'?'':l.arrivee}','${l.depart==='—'?'':l.depart}')" style="font-size:11px">✏️</a></td>
    <td class="c">${l.retard_jour_min>0?`<span class="badge late">${esc(l.retard_jour_texte)}</span>`:(l.arrivee?`<span class="badge ok">À l'heure</span>`:'<span class="muted">—</span>')}</td>
    <td class="c">${l.retard_mois_min>0?`<b style="color:var(--o)">${esc(l.retard_mois_texte)}</b>`:'<span class="muted">0 min</span>'}</td>
    <td class="c"><span class="badge ${l.heure_arret&&l.heure_arret.startsWith('En service')?'ok':'wait'}">${esc(l.heure_arret||'—')}</span>${l.inactif_minutes>0?` <span style="color:${l.inactif_minutes>=10?'#b00020':'#6f6577'};font-size:11px">(${l.inactif_minutes}m)</span>`:''}</td>
@@ -128,6 +129,7 @@ async function vTs(){
   </div>
   <span class="muted" style="font-size:12px;flex:1">Arrivée et départ enregistrés automatiquement sur votre PC ou manuellement avec ces boutons.</span>
 </div>`:"")
+ +((me.role==="employe"&&me.rattrapage_actif)?`<div class="card" style="background:#fff3e0;border:1px solid #ffe0b2;color:#b26a00;font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px"><span>📢 <b>Mode rattrapage ouvert par la direction :</b> Vous avez l'autorisation exceptionnelle de compléter et modifier vos saisies des jours passés.</span></div>`:"")
  +`<div class="card"><div class="row">${adm?`<b style="color:var(--v)">Employé</b><select style="width:200px" onchange="S.uid=+this.value;vTs()">${S.empl.map(u=>`<option value="${u.id}" ${u.id===S.uid?"selected":""}>${esc(u.nom)}</option>`).join("")}</select>`:""}
  <b style="color:var(--v)">Année</b><input type="number" style="width:90px" value="${S.annee}" onchange="S.annee=+this.value;vTs()">
  <span style="flex:1"></span>${badge(r.validation.statut)}
@@ -139,7 +141,7 @@ async function vTs(){
  ${lock?"":`<tr class="form"><td><input type="date" id="fd" value="${dflt}"></td><td class="c muted">auto</td><td><select id="fa">${me.activites.map(a=>`<option>${esc(a)}</option>`).join("")}</select></td><td><input id="fc"></td><td><input id="ft"></td><td><textarea id="fx" rows="1"></textarea></td><td><input id="fh" style="width:70px" placeholder="0"></td><td><button class="btn o" onclick="ajouter()">Ajouter</button></td></tr>`}
  ${r.saisies.map(s=>{
    const isToday = s.date === me.date;
-   const canEdit = adm || (!lock && isToday);
+   const canEdit = adm || (!lock && (isToday || me.rattrapage_actif));
    return `<tr>
      <td class="c">${s.date.split("-").reverse().join("/")}</td>
      <td class="c" style="color:var(--v);font-weight:700">${s.arrivee||"—"}</td>
@@ -152,7 +154,7 @@ async function vTs(){
    </tr>`;
  }).join("")}
  <tr class="tot"><td colspan="6" style="text-align:right">TOTAL TIMESHEET ${MOIS[S.mois-1].toUpperCase()}</td><td class="c">${Math.round(total*10)/10}</td><td></td></tr></table>
- ${lock?`<p class="muted">Ce mois est validé par la direction : il n'est plus modifiable.</p>`:(!adm?`<p class="muted" style="font-size:12px;margin-top:8px">ℹ️ Vous pouvez modifier ou supprimer vos saisies du jour même. Les jours précédents sont verrouillés pour préserver l'historique.</p>`:"")}</div>`}
+ ${lock?`<p class="muted">Ce mois est validé par la direction : il n'est plus modifiable.</p>`:(!adm?(me.rattrapage_actif?`<p class="muted" style="font-size:12px;margin-top:8px;color:#b26a00">🔓 Mode rattrapage ouvert par la direction : vous pouvez corriger et compléter n'importe quel jour.</p>`:`<p class="muted" style="font-size:12px;margin-top:8px">ℹ️ Vous pouvez modifier ou supprimer vos saisies du jour même. Les jours précédents sont verrouillés pour préserver l'historique.</p>`):"")}</div>`}
 
 async function commencer(){await api("/connexion",{method:"POST",body:{type:"manuel",pc:window.ach?.pc||"navigateur"}});vTs()}
 async function partir(){if(!confirm("Confirmez-vous l'enregistrement de votre fin de journée ?"))return;try{await api("/depart",{method:"POST",body:{pc:window.ach?.pc||"navigateur"}});vTs()}catch(e){alert(e.message)}}
@@ -197,6 +199,44 @@ async function validerModifSaisie(id){
 async function suppr(id){if(!confirm("Supprimer cette ligne ?"))return;try{await api("/saisies/"+id,{method:"DELETE"});vTs()}catch(e){alert(e.message)}}
 async function valider(st){await api("/validation",{method:"POST",body:{user_id:S.uid,mois:mm(),statut:st}});vTs()}
 
+async function modalRegularisation(uid=null,defDate=null,defArr="",defDep=""){
+ if(!S.empl.length)S.empl=(await api("/utilisateurs")).filter(u=>u.role==="employe"&&u.actif);
+ const selUid=uid||S.empl[0]?.id;
+ const d=defDate||S.jour||me.date;
+ $("#modal-box").innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999">
+  <div style="background:#fff;padding:24px;border-radius:12px;width:380px;max-width:90vw;box-shadow:0 10px 30px rgba(0,0,0,0.25)">
+    <h3 style="margin-top:0;color:var(--v)">⏱️ Régulariser un pointage</h3>
+    <p class="muted" style="font-size:12px">Saisissez ou corrigez l'arrivée et/ou le départ d'une date passée.</p>
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Employé</label>
+    <select id="reg-emp" style="margin-top:4px">${S.empl.map(u=>`<option value="${u.id}" ${u.id===selUid?"selected":""}>${esc(u.nom)}</option>`).join("")}</select>
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Date concernée</label>
+    <input type="date" id="reg-date" value="${d}" style="margin-top:4px">
+    <div style="display:flex;gap:12px;margin-top:8px">
+      <div style="flex:1"><label style="font-size:12px;font-weight:bold;display:block">Heure d'arrivée</label><input type="time" id="reg-arr" value="${defArr}" style="margin-top:4px"></div>
+      <div style="flex:1"><label style="font-size:12px;font-weight:bold;display:block">Heure de départ</label><input type="time" id="reg-dep" value="${defDep}" style="margin-top:4px"></div>
+    </div>
+    <div id="reg-err" class="err" style="margin:8px 0"></div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="$('#modal-box').innerHTML=''">Annuler</button>
+      <button class="btn" style="padding:8px 14px" onclick="validerRegularisation()">Enregistrer</button>
+    </div>
+  </div>
+ </div>`;
+}
+
+async function validerRegularisation(){
+ const empId=+$("#reg-emp").value,dt=$("#reg-date").value,arr=$("#reg-arr").value.trim(),dep=$("#reg-dep").value.trim();
+ if(!empId||!dt){$("#reg-err").textContent="Sélectionnez un employé et une date.";return}
+ if(!arr&&!dep){$("#reg-err").textContent="Indiquez au moins une heure d'arrivée ou de départ.";return}
+ try{
+   await api("/regularisation-pointage",{method:"POST",body:{user_id:empId,date:dt,arrivee:arr,depart:dep}});
+   $("#modal-box").innerHTML="";
+   alert("Pointage régularisé avec succès !");
+   S.jour=dt;
+   vBord();
+ }catch(e){$("#reg-err").textContent=e.message}
+}
+
 // ----- Pointages
 async function vPt(){const r=await api("/connexions?mois="+mm());
  $("#m").innerHTML=`<div class="card"><div class="row"><b style="color:var(--v)">Année</b><input type="number" style="width:90px" value="${S.annee}" onchange="S.annee=+this.value;vPt()"></div>
@@ -208,9 +248,11 @@ async function vPt(){const r=await api("/connexions?mois="+mm());
 async function vEmp(){const u=await api("/utilisateurs");
  $("#m").innerHTML=`<div class="card"><h2>Créer un compte employé</h2><div class="grid"><input id="cn" placeholder="Nom complet"><input id="ci" placeholder="Identifiant (ex. doriane)"><input id="cp" placeholder="Poste"><input id="cm" placeholder="Mot de passe provisoire (8 car. min.)"></div>
  <div class="err" id="e"></div><button class="btn o" onclick="creer()">Créer le compte</button><p class="muted">L'employé devra choisir son propre mot de passe à sa première connexion.</p></div>
- <div class="card"><table><tr><th style="text-align:left">Nom</th><th>Identifiant</th><th>Poste</th><th>Rôle</th><th>État</th><th></th></tr>
- ${u.map(x=>`<tr><td><b>${esc(x.nom)}</b></td><td class="c">${esc(x.identifiant)}</td><td class="c">${esc(x.poste)}</td><td class="c">${x.role==="admin"?"Administratrice":"Employé"}</td><td class="c"><span class="badge ${x.actif?"ok":"wait"}">${x.actif?"Actif":"Désactivé"}</span></td>
-  <td><a class="x" onclick="modalMdp(${x.id},'${esc(x.nom)}')">nouveau mot de passe</a>${x.id!==me.id?`<a class="x" onclick="bascule(${x.id},${!x.actif})">${x.actif?"désactiver":"réactiver"}</a><a class="x" style="color:#b00020" onclick="modalSuppr(${x.id},'${esc(x.nom)}')">supprimer</a>`:""}</td></tr>`).join("")}</table></div>`}
+ <div class="card"><table><tr><th style="text-align:left">Nom</th><th>Identifiant</th><th>Poste</th><th>Rôle</th><th>État</th><th>Actions</th></tr>
+ ${u.map(x=>`<tr><td><b>${esc(x.nom)}</b></td><td class="c">${esc(x.identifiant)}</td><td class="c">${esc(x.poste)}</td><td class="c">${x.role==="admin"?"Administratrice":"Employé"}</td><td class="c"><span class="badge ${x.actif?"ok":"wait"}">${x.actif?"Actif":"Désactivé"}</span>${x.rattrapage_actif?`<span class="badge late" style="margin-left:4px" title="Rattrapage ouvert">Rattrapage ouvert</span>`:""}</td>
+  <td><a class="x" onclick="modalMdp(${x.id},'${esc(x.nom)}')">mot de passe</a>${x.role==="employe"?`<a class="x" style="color:${x.rattrapage_actif?'#b00020':'#1e7b3a'};font-weight:600" onclick="toggleRattrapage(${x.id},${!x.rattrapage_actif})">${x.rattrapage_actif?'🔒 Bloquer rattrapage':'🔓 Ouvrir rattrapage'}</a>`:""}${x.id!==me.id?`<a class="x" onclick="bascule(${x.id},${!x.actif})">${x.actif?"désactiver":"réactiver"}</a><a class="x" style="color:#b00020" onclick="modalSuppr(${x.id},'${esc(x.nom)}')">supprimer</a>`:""}</td></tr>`).join("")}</table></div>`}
+
+async function toggleRattrapage(id,a){try{await api("/utilisateurs/"+id+"/rattrapage",{method:"PUT",body:{rattrapage_actif:a}});vEmp()}catch(e){alert(e.message)}}
 async function creer(){try{await api("/utilisateurs",{method:"POST",body:{nom:$("#cn").value,identifiant:$("#ci").value,poste:$("#cp").value,mdp:$("#cm").value}});S.empl=[];vEmp()}catch(e){$("#e").textContent=e.message}}
 function modalMdp(id,nom){$("#modal-box").innerHTML=`<div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);display:flex;align-items:center;justify-content:center;z-index:9999"><div style="background:#fff;padding:24px;border-radius:12px;width:340px;box-shadow:0 10px 30px rgba(0,0,0,0.25)"><h3 style="margin-top:0;color:var(--v)">Nouveau mot de passe</h3><p class="muted" style="font-size:13px">Pour : <b>${esc(nom)}</b></p><label style="font-size:13px;font-weight:bold">Mot de passe provisoire (min. 8 car.) :</label><input id="modal-inp-mdp" type="text" style="width:100%;box-sizing:border-box;margin:8px 0 12px;padding:8px;border:1px solid #ccc;border-radius:6px" placeholder="ex. Ach2026!"><div id="modal-err" class="err" style="margin-bottom:8px"></div><div style="display:flex;justify-content:flex-end;gap:8px"><button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="$('#modal-box').innerHTML=''">Annuler</button><button class="btn" style="padding:8px 14px" onclick="validerModalMdp(${id})">Enregistrer</button></div></div></div>`}
 async function validerModalMdp(id){const m=$("#modal-inp-mdp").value.trim();if(m.length<8){$("#modal-err").textContent="Le mot de passe doit comporter au moins 8 caractères.";return}try{await api("/utilisateurs/"+id,{method:"PUT",body:{mdp:m}});$("#modal-box").innerHTML="";alert("Mot de passe mis à jour avec succès !")}catch(e){$("#modal-err").textContent=e.message}}
