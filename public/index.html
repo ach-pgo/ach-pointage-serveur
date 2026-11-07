@@ -41,7 +41,55 @@ const hdr=()=>`<header><img src="/logo.png" alt="ACH" style="height:38px;width:3
 function vueLogin(msg=""){$("#app").innerHTML=`<div class="login"><img src="/logo.png" alt="ACH" style="width:96px;height:96px;object-fit:contain;border-radius:12px;background:#fff;padding:4px;box-shadow:0 3px 10px rgba(107,45,139,.18);margin-bottom:12px"><h1 style="color:var(--v);margin-bottom:2px">ACH <span style="color:var(--o)">ProGestions</span> &amp; Outils</h1><p class="muted">Pointage et timesheet</p>
 <div class="card"><label>Identifiant</label><input id="u" autofocus><label>Mot de passe</label><input id="p" type="password" onkeydown="if(event.key==='Enter')connecter()">
 <div class="err" id="e">${esc(msg)}</div><button class="btn" style="width:100%;margin-top:6px" onclick="connecter()">Se connecter</button></div></div>`}
-let heartbeatTimer = null;
+let heartbeatTimer = null, notifPauseTimer = null;
+function lancerRappelsPause() {
+  if (notifPauseTimer) clearInterval(notifPauseTimer);
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") {
+    Notification.requestPermission();
+  }
+
+  notifPauseTimer = setInterval(async () => {
+    if (!token || !me || me.role !== "employe") return;
+    try {
+      const ar = await api("/aujourdhui");
+      if (!ar || !ar.arrivee || ar.depart) return; // pas pointé ou déjà parti
+
+      const now = new Date();
+      const hStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      const params = await api("/parametres");
+      const hDebut = params.debut_pause_recommande || "12:00";
+      const hFin = params.fin_pause_recommande || "13:00";
+
+      // 1. Rappel pour partir en pause (ex. à 12h00 ou 12h05)
+      if (!ar.pause?.en_pause && ar.pause?.minutes_pause_jour === 0 && hStr >= hDebut && hStr <= hFin) {
+        if (!sessionStorage.getItem("notif_pause_debut_" + hStr)) {
+          sessionStorage.setItem("notif_pause_debut_" + hStr, "1");
+          envoyerNotification("☕ Heure de la pause déjeuner !", "C'est l'heure de la pause. Pensez à cliquer sur « Partir en pause ».");
+        }
+      }
+
+      // 2. Rappel pour reprendre le travail si la pause dure depuis plus de la durée max
+      if (ar.pause?.en_pause) {
+        const duree = ar.pause?.duree_depuis_debut_pause || 0;
+        const maxDuree = ar.pause?.duree_max_minutes || 60;
+        if (duree >= maxDuree - 5) {
+          if (!sessionStorage.getItem("notif_pause_fin_" + Math.floor(duree))) {
+            sessionStorage.setItem("notif_pause_fin_" + Math.floor(duree), "1");
+            envoyerNotification("▶️ Reprise du travail", "Votre pause arrive à son terme. Pensez à cliquer sur « Reprendre le travail ».");
+          }
+        }
+      }
+    } catch(e) {}
+  }, 60000);
+}
+
+function envoyerNotification(titre, message) {
+  if (Notification.permission === "granted") {
+    new Notification(titre, { body: message, icon: "/logo.png" });
+  }
+}
+
 function lancerSuiviActivite() {
   if (heartbeatTimer) clearInterval(heartbeatTimer);
   heartbeatTimer = setInterval(async () => {
@@ -60,8 +108,8 @@ function lancerSuiviActivite() {
   }, 45000);
 }
 
-async function connecter(){try{const r=await api("/login",{method:"POST",body:{identifiant:$("#u").value,mdp:$("#p").value}});token=r.token;localStorage.setItem("ach_token",token);if(window.ach?.setToken)await window.ach.setToken(token);lancerSuiviActivite();await demarrer()}catch(e){$("#e").textContent=e.message}}
-async function demarrer(){try{me=await api("/me");if(window.ach?.setToken&&token)await window.ach.setToken(token);lancerSuiviActivite()}catch{return vueLogin()}
+async function connecter(){try{const r=await api("/login",{method:"POST",body:{identifiant:$("#u").value,mdp:$("#p").value}});token=r.token;localStorage.setItem("ach_token",token);if(window.ach?.setToken)await window.ach.setToken(token);lancerSuiviActivite();lancerRappelsPause();await demarrer()}catch(e){$("#e").textContent=e.message}}
+async function demarrer(){try{me=await api("/me");if(window.ach?.setToken&&token)await window.ach.setToken(token);lancerSuiviActivite();lancerRappelsPause()}catch{return vueLogin()}
  const d=me.date;S.annee=+d.slice(0,4);S.mois=+d.slice(5,7);S.uid=me.id;
  if(me.doit_changer_mdp)return vueMdp();
  if(me.role==="employe"&&!sessionStorage.auto){sessionStorage.auto=1;try{await api("/connexion",{method:"POST",body:{type:"auto",pc:window.ach?.pc||"navigateur",heure_pc:window.ach?.demarrage||new Date().toTimeString().slice(0,8)}})}catch{}}
@@ -80,26 +128,27 @@ const mm=()=>`${S.annee}-${String(S.mois).padStart(2,"0")}`;
 // ----- Tableau de bord
 async function vBord(){const dt=S.jour||me.date;const r=await api("/tableau-de-bord?date="+dt);
  if(!S.empl.length)S.empl=(await api("/utilisateurs")).filter(u=>u.role==="employe"&&u.actif);
- const cl=s=>s==="En retard"?"late":s==="À l'heure"?"ok":"wait";
+ const cl=s=>s==="En pause"?"wait":s==="En retard"?"late":s==="À l'heure"?"ok":"wait";
  $("#m").innerHTML=`<div class="card row" style="justify-content:space-between"><div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap"><b style="color:var(--v)">Date consultée</b><input type="date" style="width:170px" value="${r.date}" onchange="S.jour=this.value;vBord()"><span class="muted">Arrivée attendue : <b>${r.heure_attendue}</b> · mois : ${MOIS[+r.mois.slice(5)-1]} ${r.mois.slice(0,4)}</span></div><button class="btn o" onclick="modalRegularisation(null,'${r.date}')">⏱️ Régulariser un pointage</button></div>
  <div class="card" style="overflow-x:auto"><table><tr>
-   <th style="text-align:left">Employé</th><th>Poste PC</th><th>Arrivée</th><th>Départ</th><th>Retard jour</th><th>Cumul retard mois</th><th>État PC</th><th>Présence jour</th><th>Présence mois</th><th>Timesheet mois</th><th>Validation</th>
+   <th style="text-align:left">Employé</th><th>Poste PC</th><th>Arrivée</th><th>Pause (jour)</th><th>Départ</th><th>Retard jour</th><th>Cumul retard mois</th><th>État PC</th><th>Présence jour</th><th>Présence mois</th><th>Timesheet mois</th><th>Validation</th>
  </tr>
  ${r.lignes.map(l=>`<tr>
    <td><b style="color:var(--v)">${esc(l.nom)}</b></td>
    <td class="c muted">${esc(l.pc)}</td>
    <td class="c"><b>${l.arrivee||"—"}</b> <a class="x" title="Régulariser l'arrivée" onclick="modalRegularisation(${l.id},'${r.date}','${l.arrivee==='—'?'':l.arrivee}','${l.depart==='—'?'':l.depart}')" style="font-size:11px">✏️</a></td>
+   <td class="c">${l.pause_en_cours?`<span class="badge" style="background:#fff3e0;color:#e07b00;font-weight:700">☕ En pause (${l.pause_texte_jour})</span>`:(l.pause_minutes_jour>0?`<span class="muted">${l.pause_texte_jour}</span>`:'<span class="muted">—</span>')}</td>
    <td class="c">${l.depart?`<b>${l.depart}</b>`:'<span class="muted">—</span>'} <a class="x" title="Régulariser le départ" onclick="modalRegularisation(${l.id},'${r.date}','${l.arrivee==='—'?'':l.arrivee}','${l.depart==='—'?'':l.depart}')" style="font-size:11px">✏️</a></td>
    <td class="c">${l.retard_jour_min>0?`<span class="badge late">${esc(l.retard_jour_texte)}</span>`:(l.arrivee?`<span class="badge ok">À l'heure</span>`:'<span class="muted">—</span>')}</td>
-   <td class="c">${l.retard_mois_min>0?`<b style="color:var(--o)">${esc(l.retard_mois_texte)}</b>`:'<span class="muted">0 min</span>'}</td>
-   <td class="c"><span class="badge ${l.heure_arret&&l.heure_arret.startsWith('En service')?'ok':'wait'}">${esc(l.heure_arret||'—')}</span>${l.inactif_minutes>0?` <span style="color:${l.inactif_minutes>=10?'#b00020':'#6f6577'};font-size:11px">(${l.inactif_minutes}m)</span>`:''}</td>
+   <td class="c">${l.retard_mois_min>0?`<b style="color:var(--o);cursor:help" title="${esc(l.retard_mois_details)}">${esc(l.retard_mois_texte)} ℹ️</b>`:'<span class="muted">0 min</span>'}</td>
+   <td class="c"><span class="badge ${l.pause_en_cours?'wait':(l.heure_arret&&l.heure_arret.startsWith('En service')?'ok':'wait')}">${l.pause_en_cours?'☕ En pause':esc(l.heure_arret||'—')}</span>${l.inactif_minutes>0?` <span style="color:${l.inactif_minutes>=10?'#b00020':'#6f6577'};font-size:11px">(${l.inactif_minutes}m)</span>`:''}</td>
    <td class="c" style="font-weight:700;color:var(--v)">${l.heures_presence_jour} h</td>
    <td class="c" style="font-weight:700;color:var(--v)">${l.heures_presence_mois} h</td>
    <td class="c">${l.heures_timesheet_mois} h</td>
    <td class="c">${badge(l.statut_mois)}</td>
- </tr>`).join("")||`<tr><td colspan="11" class="muted">Aucun employé actif. Créez-en dans l'onglet « Employés ».</td></tr>`}
+ </tr>`).join("")||`<tr><td colspan="12" class="muted">Aucun employé actif. Créez-en dans l'onglet « Employés ».</td></tr>`}
  <tr class="tot">
-   <td colspan="7" style="text-align:right">TOTAUX :</td>
+   <td colspan="8" style="text-align:right">TOTAUX :</td>
    <td class="c">${Math.round(r.lignes.reduce((a,l)=>a+(l.heures_presence_jour||0),0)*10)/10} h</td>
    <td class="c">${Math.round(r.lignes.reduce((a,l)=>a+(l.heures_presence_mois||0),0)*10)/10} h</td>
    <td class="c">${Math.round(r.lignes.reduce((a,l)=>a+(l.heures_timesheet_mois||0),0)*10)/10} h</td>
@@ -118,16 +167,18 @@ async function vTs(){
  $("#m").innerHTML=(ar?`<div class="card row" style="gap:24px;flex-wrap:wrap">
   <div>
     <div class="muted">Pointage du jour (${ar.date.split("-").reverse().join("/")})</div>
-    <div style="display:flex;gap:20px;align-items:center;margin-top:4px">
+    <div style="display:flex;gap:20px;align-items:center;margin-top:4px;flex-wrap:wrap">
       <div><span class="muted" style="font-size:12px">Arrivée :</span> <span class="big" style="font-size:22px;color:var(--v)">${ar.arrivee||"—"}</span></div>
+      <div><span class="muted" style="font-size:12px">Pause :</span> <span class="big" style="font-size:20px;color:${ar.pause?.en_pause?'#e07b00':'var(--v)'}">${ar.pause?.en_pause?'☕ En cours':(ar.pause?.minutes_pause_jour>0?ar.pause?.texte_pause_jour:'0 min')}</span></div>
       <div><span class="muted" style="font-size:12px">Départ :</span> <span class="big" style="font-size:22px;color:var(--o)">${ar.depart||"—"}</span></div>
     </div>
   </div>
-  <div style="display:flex;gap:10px;align-items:center">
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
     <button class="btn o" onclick="commencer()">Je commence</button>
+    ${ar.arrivee && !ar.depart ? `<button class="btn" style="background:${ar.pause?.en_pause?'#1e7b3a':'#e07b00'};color:#fff;font-weight:700" onclick="basculerPause()">${ar.pause?.en_pause?'▶️ Reprendre le travail':'☕ Partir en pause'}</button>` : ''}
     <button class="btn" style="background:#b00020;color:#fff" onclick="partir()">Fin de journée / Je pars</button>
   </div>
-  <span class="muted" style="font-size:12px;flex:1">Arrivée et départ enregistrés automatiquement sur votre PC ou manuellement avec ces boutons.</span>
+  <span class="muted" style="font-size:12px;flex:1">Arrivée, pauses et départ enregistrés en direct. Les pauses sont automatiquement déduites de votre temps de présence.</span>
 </div>`:"")
  +((me.role==="employe"&&me.rattrapage_actif)?`<div class="card" style="background:#fff3e0;border:1px solid #ffe0b2;color:#b26a00;font-size:13px;font-weight:600;display:flex;align-items:center;gap:10px"><span>📢 <b>Mode rattrapage ouvert par la direction :</b> Vous avez l'autorisation exceptionnelle de compléter et modifier vos saisies des jours passés.</span></div>`:"")
  +`<div class="card"><div class="row">${adm?`<b style="color:var(--v)">Employé</b><select style="width:200px" onchange="S.uid=+this.value;vTs()">${S.empl.map(u=>`<option value="${u.id}" ${u.id===S.uid?"selected":""}>${esc(u.nom)}</option>`).join("")}</select>`:""}
@@ -157,6 +208,19 @@ async function vTs(){
  ${lock?`<p class="muted">Ce mois est validé par la direction : il n'est plus modifiable.</p>`:(!adm?(me.rattrapage_actif?`<p class="muted" style="font-size:12px;margin-top:8px;color:#b26a00">🔓 Mode rattrapage ouvert par la direction : vous pouvez corriger et compléter n'importe quel jour.</p>`:`<p class="muted" style="font-size:12px;margin-top:8px">ℹ️ Vous pouvez modifier ou supprimer vos saisies du jour même. Les jours précédents sont verrouillés pour préserver l'historique.</p>`):"")}</div>`}
 
 async function commencer(){await api("/connexion",{method:"POST",body:{type:"manuel",pc:window.ach?.pc||"navigateur"}});vTs()}
+async function basculerPause(){
+  try {
+    const res = await api("/bascule-pause", {method:"POST", body:{pc:window.ach?.pc||"navigateur"}});
+    if(res.type === "pause") {
+      alert("☕ Pause enregistrée à " + res.heure + ". Reposez-vous bien !");
+    } else {
+      alert("▶️ Reprise du travail enregistrée à " + res.heure + ". Bon courage !");
+    }
+    vTs();
+  } catch(e) {
+    alert(e.message);
+  }
+}
 async function partir(){if(!confirm("Confirmez-vous l'enregistrement de votre fin de journée ?"))return;try{await api("/depart",{method:"POST",body:{pc:window.ach?.pc||"navigateur"}});vTs()}catch(e){alert(e.message)}}
 async function ajouter(){try{await api("/saisies",{method:"POST",body:{user_id:S.uid,date:$("#fd").value,activite:$("#fa").value,client:$("#fc").value,tache:$("#ft").value,description:$("#fx").value,heures:$("#fh").value||0}});
  const d=$("#fd").value;if(d)S.mois=+d.slice(5,7),S.annee=+d.slice(0,4);vTs()}catch(e){alert(e.message)}}
@@ -176,8 +240,8 @@ function modalModifSaisie(id){
     <input id="m-tac" style="margin-top:4px" value="${esc(s.tache||"")}">
     <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Description</label>
     <textarea id="m-des" rows="2" style="margin-top:4px">${esc(s.description||"")}</textarea>
-    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Nombre d'heures</label>
-    <input id="m-heu" type="number" step="0.25" style="margin-top:4px;width:120px" value="${s.heures}">
+    <label style="font-size:12px;font-weight:bold;display:block;margin-top:8px">Nombre d'heures ${me.role!=="admin"?'<span class="muted" style="font-weight:normal">(non modifiable par l\'employé pour éviter les tricheries)</span>':''}</label>
+    <input id="m-heu" type="number" step="0.25" style="margin-top:4px;width:120px;${me.role!=='admin'?'background:#f0f0f0;cursor:not-allowed':''}" value="${s.heures}" ${me.role!=='admin'?'disabled':''}>
     <div id="m-err" class="err" style="margin:8px 0"></div>
     <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
       <button style="background:#eee;border:none;padding:8px 14px;border-radius:6px;cursor:pointer" onclick="$('#modal-box').innerHTML=''">Annuler</button>
@@ -262,8 +326,30 @@ async function confirmerSuppr(id){try{await api("/utilisateurs/"+id,{method:"DEL
 
 // ----- Paramètres
 async function vPar(){const p=await api("/parametres");
- $("#m").innerHTML=`<div class="card"><h2>Paramètres</h2><label><b>Heure d'arrivée attendue</b></label><input type="time" id="ha" value="${p.heure_attendue}" style="width:140px">
- <p><b>Activités</b> <span class="muted">(une par ligne)</span></p><textarea id="ac" rows="6">${esc(p.activites.join("\n"))}</textarea><br><br><button class="btn o" onclick="sauverPar()">Enregistrer</button></div>`}
-async function sauverPar(){await api("/parametres",{method:"PUT",body:{heure_attendue:$("#ha").value,activites:$("#ac").value.split("\n")}});me=await api("/me");alert("Paramètres enregistrés.")}
+ $("#m").innerHTML=`<div class="card"><h2>Paramètres généraux</h2>
+ <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:16px">
+   <div><label><b>Heure d'arrivée attendue</b></label><input type="time" id="ha" value="${p.heure_attendue||'08:00'}" style="margin-top:4px"></div>
+   <div><label><b>Début plage pause déjeuner</b></label><input type="time" id="hpd" value="${p.debut_pause_recommande||'12:00'}" style="margin-top:4px"></div>
+   <div><label><b>Fin plage pause déjeuner</b></label><input type="time" id="hpf" value="${p.fin_pause_recommande||'13:00'}" style="margin-top:4px"></div>
+   <div><label><b>Durée maximale pause (min)</b></label><input type="number" id="hpm" value="${p.duree_max_pause_minutes||60}" style="margin-top:4px" min="15" max="180"></div>
+ </div>
+ <p class="muted" style="font-size:12px;margin-top:-6px;margin-bottom:16px">💡 La durée maximale sert de plafond intelligent : si l'employé oublie de pointer sa reprise, la pause s'arrêtera automatiquement à cette durée.</p>
+ <p><b>Activités</b> <span class="muted">(une par ligne)</span></p><textarea id="ac" rows="5">${esc(p.activites.join("\n"))}</textarea><br><br>
+ <button class="btn o" onclick="sauverPar()">Enregistrer les paramètres</button></div>`}
+
+async function sauverPar(){
+  await api("/parametres",{
+    method:"PUT",
+    body:{
+      heure_attendue:$("#ha").value,
+      debut_pause_recommande:$("#hpd").value,
+      fin_pause_recommande:$("#hpf").value,
+      duree_max_pause_minutes:+$("#hpm").value||60,
+      activites:$("#ac").value.split("\n")
+    }
+  });
+  me=await api("/me");
+  alert("Paramètres enregistrés avec succès.");
+}
 token?demarrer():vueLogin();
 </script></body></html>
