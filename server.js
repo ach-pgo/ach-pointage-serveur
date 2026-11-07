@@ -210,7 +210,7 @@ app.post("/api/connexion", auth, (req, res) => {
   synchroniserTurso();
   res.json({ ok: true, arrivee: arrivee(req.user.id, n.date) });
 });
-const arrivee = (uid, date) => hhmm(db.prepare("SELECT MIN(heure) h FROM connexions WHERE user_id=? AND date=? AND type != 'depart'").get(uid, date)?.h);
+const arrivee = (uid, date) => hhmm(db.prepare("SELECT MIN(heure) h FROM connexions WHERE user_id=? AND date=? AND type NOT IN ('depart', 'pause', 'reprise')").get(uid, date)?.h);
 const depart = (uid, date) => {
   const rowDep = db.prepare("SELECT MAX(heure) h FROM connexions WHERE user_id=? AND date=? AND type='depart'").get(uid, date);
   if (rowDep && rowDep.h) return hhmm(rowDep.h);
@@ -218,6 +218,73 @@ const depart = (uid, date) => {
   if (rowAct && rowAct.arret_detecte && rowAct.heure_arret) return hhmm(rowAct.heure_arret);
   return null;
 };
+
+// Calcule la durée totale des pauses prises dans une journée (en minutes)
+// Avec plafonnement intelligent : si reprise non pointée, la pause est plafonnée à duree_max_pause_minutes
+function dureePausesJour(uid, date) {
+  const maxPauseMin = Number(getParam("duree_max_pause_minutes") || "60");
+  const events = db.prepare("SELECT heure, type FROM connexions WHERE user_id=? AND date=? AND type IN ('pause', 'reprise') ORDER BY heure, id").all(uid, date);
+  let totalMin = 0;
+  let debutPause = null;
+  for (const ev of events) {
+    if (ev.type === "pause") {
+      debutPause = ev.heure;
+    } else if (ev.type === "reprise" && debutPause) {
+      const [hP, mP] = debutPause.slice(0, 5).split(":").map(Number);
+      const [hR, mR] = ev.heure.slice(0, 5).split(":").map(Number);
+      let diff = (hR * 60 + mR) - (hP * 60 + mP);
+      if (diff > 0) {
+        if (maxPauseMin > 0 && diff > maxPauseMin) diff = maxPauseMin; // Plafond intelligent
+        totalMin += diff;
+      }
+      debutPause = null;
+    }
+  }
+  // Si actuellement en pause (pas encore repris)
+  if (debutPause) {
+    if (date === maintenantLocal().date) {
+      const [hP, mP] = debutPause.slice(0, 5).split(":").map(Number);
+      const [hNow, mNow] = maintenantLocal().heure.slice(0, 5).split(":").map(Number);
+      let diff = (hNow * 60 + mNow) - (hP * 60 + mP);
+      if (diff > 0) {
+        if (maxPauseMin > 0 && diff > maxPauseMin) diff = maxPauseMin;
+        totalMin += diff;
+      }
+    } else {
+      // Jour passé resté sans reprise : on applique le forfait max
+      totalMin += maxPauseMin;
+    }
+  }
+  return totalMin;
+}
+
+// État actuel de la pause pour l'employé aujourd'hui
+function etatPauseJour(uid, date) {
+  const dernier = db.prepare("SELECT heure, type FROM connexions WHERE user_id=? AND date=? AND type IN ('pause', 'reprise') ORDER BY heure DESC, id DESC LIMIT 1").get(uid, date);
+  const maxPauseMin = Number(getParam("duree_max_pause_minutes") || "60");
+  let enPause = dernier?.type === "pause";
+  let dureeDepuisDebut = 0;
+
+  if (enPause && date === maintenantLocal().date) {
+    const [hP, mP] = dernier.heure.slice(0, 5).split(":").map(Number);
+    const [hNow, mNow] = maintenantLocal().heure.slice(0, 5).split(":").map(Number);
+    dureeDepuisDebut = (hNow * 60 + mNow) - (hP * 60 + mP);
+    if (maxPauseMin > 0 && dureeDepuisDebut >= maxPauseMin) {
+      // Le plafond a été atteint ! La reprise est considérée automatique
+      enPause = false;
+    }
+  }
+
+  const minutesTotales = dureePausesJour(uid, date);
+  return {
+    en_pause: enPause,
+    heure_debut_pause: enPause ? hhmm(dernier.heure) : null,
+    minutes_pause_jour: minutesTotales,
+    texte_pause_jour: formaterDuree(minutesTotales),
+    duree_depuis_debut_pause: dureeDepuisDebut,
+    duree_max_minutes: maxPauseMin
+  };
+}
 
 function calculerMinutesRetard(heureArr, heureAttendue) {
   if (!heureArr || !heureAttendue) return 0;
@@ -236,28 +303,42 @@ function formaterDuree(minutes) {
   return `${h} h ${m} min`;
 }
 
+// Calcule le cumul des retards du mois avec le détail jour par jour
 function retardCumuleMois(uid, mois, heureAttendue) {
   const [a, b] = borne(mois);
   const jours = db.prepare(`
     SELECT date, MIN(heure) h
     FROM connexions
-    WHERE user_id=? AND date BETWEEN ? AND ? AND type != 'depart'
+    WHERE user_id=? AND date BETWEEN ? AND ? AND type NOT IN ('depart', 'pause', 'reprise')
     GROUP BY date
+    ORDER BY date
   `).all(uid, a, b);
 
   let totalRetardMin = 0;
+  const details = [];
   for (const j of jours) {
-    totalRetardMin += calculerMinutesRetard(j.h, heureAttendue);
+    const rMin = calculerMinutesRetard(j.h, heureAttendue);
+    if (rMin > 0) {
+      totalRetardMin += rMin;
+      const dateFr = j.date.split("-").reverse().slice(0, 2).join("/");
+      details.push(`${dateFr} (${hhmm(j.h)}) : +${formaterDuree(rMin)}`);
+    }
   }
-  return totalRetardMin;
+  return {
+    total_minutes: totalRetardMin,
+    texte: formaterDuree(totalRetardMin),
+    nombre_retards: details.length,
+    details: details.join(" • ") || "Aucun retard ce mois"
+  };
 }
 
-function calculerMinutesPresence(heureArr, heureDep) {
+function calculerMinutesPresence(heureArr, heureDep, minutesPauses = 0) {
   if (!heureArr || !heureDep) return 0;
   const [hA, mA] = heureArr.slice(0, 5).split(":").map(Number);
   const [hD, mD] = heureDep.slice(0, 5).split(":").map(Number);
-  const diff = (hD * 60 + mD) - (hA * 60 + mA);
-  return diff > 0 ? diff : 0;
+  const brut = (hD * 60 + mD) - (hA * 60 + mA);
+  const net = brut - (minutesPauses || 0);
+  return net > 0 ? net : 0;
 }
 
 function heuresPresenceJour(uid, date) {
@@ -267,7 +348,8 @@ function heuresPresenceJour(uid, date) {
   if (!dep && date === maintenantLocal().date) {
     dep = maintenantLocal().heure;
   }
-  const min = calculerMinutesPresence(arr, dep);
+  const minPauses = dureePausesJour(uid, date);
+  const min = calculerMinutesPresence(arr, dep, minPauses);
   return Math.round((min / 60) * 10) / 10;
 }
 
@@ -280,7 +362,7 @@ function heuresPresenceMois(uid, mois) {
            act.heure_arret, act.heure_dernier_signal, act.arret_detecte
     FROM connexions c
     LEFT JOIN activites_pc act ON act.user_id=c.user_id AND act.date=c.date
-    WHERE c.user_id=? AND c.date BETWEEN ? AND ? AND c.type != 'depart'
+    WHERE c.user_id=? AND c.date BETWEEN ? AND ? AND c.type NOT IN ('depart', 'pause', 'reprise')
     GROUP BY c.date
   `).all(uid, a, b);
 
@@ -293,13 +375,22 @@ function heuresPresenceMois(uid, mois) {
     } else if (!dep && r.heure_dernier_signal) {
       dep = r.heure_dernier_signal;
     }
-    totalMin += calculerMinutesPresence(r.arr, dep);
+    const minP = dureePausesJour(uid, r.date);
+    totalMin += calculerMinutesPresence(r.arr, dep, minP);
   }
   return Math.round((totalMin / 60) * 10) / 10;
 }
 
 app.post("/api/depart", auth, (req, res) => {
   const n = maintenantLocal(), ts = Date.now();
+
+  // Si l'employé était en pause, on clôture automatiquement la pause au moment du départ
+  const pauseEtat = etatPauseJour(req.user.id, n.date);
+  if (pauseEtat.en_pause) {
+    db.prepare("INSERT INTO connexions(user_id,date,heure,type,pc,heure_pc,ts) VALUES(?,?,?,?,?,?,?)")
+      .run(req.user.id, n.date, n.heure, "reprise", String(req.body?.pc || "").slice(0, 80), String(req.body?.heure_pc || "").slice(0, 40), ts);
+  }
+
   db.prepare("INSERT INTO connexions(user_id,date,heure,type,pc,heure_pc,ts) VALUES(?,?,?,?,?,?,?)")
     .run(req.user.id, n.date, n.heure, "depart", String(req.body?.pc || "").slice(0, 80), String(req.body?.heure_pc || "").slice(0, 40), ts);
 
@@ -314,12 +405,47 @@ app.post("/api/depart", auth, (req, res) => {
   res.json({ ok: true, depart: hhmm(n.heure) });
 });
 
+// Bouton bascule « Partir en pause » / « Reprendre le travail »
+app.post("/api/bascule-pause", auth, (req, res) => {
+  const n = maintenantLocal(), ts = Date.now();
+  const arr = arrivee(req.user.id, n.date);
+  if (!arr) {
+    return res.status(400).json({ erreur: "Vous devez d'abord pointer votre arrivée pour prendre une pause." });
+  }
+  const dep = depart(req.user.id, n.date);
+  if (dep) {
+    return res.status(400).json({ erreur: "Votre journée est déjà clôturée." });
+  }
+
+  const etatActuel = etatPauseJour(req.user.id, n.date);
+  const nouveauType = etatActuel.en_pause ? "reprise" : "pause";
+  const actionLabel = nouveauType === "pause" ? "Départ en pause" : "Reprise du travail";
+
+  db.prepare("INSERT INTO connexions(user_id,date,heure,type,pc,heure_pc,ts) VALUES(?,?,?,?,?,?,?)")
+    .run(req.user.id, n.date, n.heure, nouveauType, String(req.body?.pc || "").slice(0, 80), String(req.body?.heure_pc || "").slice(0, 40), ts);
+
+  const act = db.prepare("SELECT id FROM activites_pc WHERE user_id=? AND date=?").get(req.user.id, n.date);
+  if (act) {
+    db.prepare("UPDATE activites_pc SET derniere_action=?, heure_dernier_signal=?, ts_maj=? WHERE id=?")
+      .run(actionLabel, n.heure, ts, act.id);
+  }
+
+  synchroniserTurso();
+  res.json({
+    ok: true,
+    type: nouveauType,
+    heure: hhmm(n.heure),
+    pause: etatPauseJour(req.user.id, n.date)
+  });
+});
+
 app.get("/api/aujourdhui", auth, (req, res) => {
   const n = maintenantLocal();
   res.json({
     date: n.date,
     arrivee: arrivee(req.user.id, n.date),
     depart: depart(req.user.id, n.date),
+    pause: etatPauseJour(req.user.id, n.date),
     connexions: db.prepare("SELECT heure,type,pc FROM connexions WHERE user_id=? AND date=? ORDER BY heure").all(req.user.id, n.date)
   });
 });
@@ -467,7 +593,12 @@ app.put("/api/saisies/:id", auth, (req, res) => {
   const s = saisieAutorisee(req, res); if (!s) return;
   const n = lireSaisie(req.body || {}); if (n.erreur) return res.status(400).json(n);
   if (verrou(req, s.user_id, n.v[0])) return res.status(423).json({ erreur: "Le mois choisi est validé." });
-  db.prepare("UPDATE saisies SET date=?,activite=?,client=?,tache=?,description=?,heures=? WHERE id=?").run(...n.v, s.id);
+
+  // Anti-triche : si l'utilisateur est un employé, le nombre d'heures est strictement conservé tel qu'enregistré à l'origine
+  const heuresFinales = (req.user.role === "admin") ? n.v[5] : s.heures;
+
+  db.prepare("UPDATE saisies SET date=?,activite=?,client=?,tache=?,description=?,heures=? WHERE id=?")
+    .run(n.v[0], n.v[1], n.v[2], n.v[3], n.v[4], heuresFinales, s.id);
   synchroniserTurso();
   res.json({ ok: true });
 });
@@ -577,11 +708,20 @@ app.delete("/api/utilisateurs/:id", auth, admin, (req, res) => {
   res.json({ ok: true });
 });
 
-app.get("/api/parametres", auth, (req, res) => res.json({ activites: JSON.parse(getParam("activites")), heure_attendue: getParam("heure_attendue") }));
+app.get("/api/parametres", auth, (req, res) => res.json({
+  activites: JSON.parse(getParam("activites")),
+  heure_attendue: getParam("heure_attendue"),
+  debut_pause_recommande: getParam("debut_pause_recommande") || "12:00",
+  fin_pause_recommande: getParam("fin_pause_recommande") || "13:00",
+  duree_max_pause_minutes: Number(getParam("duree_max_pause_minutes") || "60")
+}));
 app.put("/api/parametres", auth, admin, (req, res) => {
-  const { activites, heure_attendue } = req.body || {};
+  const { activites, heure_attendue, debut_pause_recommande, fin_pause_recommande, duree_max_pause_minutes } = req.body || {};
   if (Array.isArray(activites) && activites.length) setParam("activites", JSON.stringify(activites.map(a => String(a).trim()).filter(Boolean)));
   if (/^\d{2}:\d{2}$/.test(heure_attendue || "")) setParam("heure_attendue", heure_attendue);
+  if (/^\d{2}:\d{2}$/.test(debut_pause_recommande || "")) setParam("debut_pause_recommande", debut_pause_recommande);
+  if (/^\d{2}:\d{2}$/.test(fin_pause_recommande || "")) setParam("fin_pause_recommande", fin_pause_recommande);
+  if (Number(duree_max_pause_minutes) > 0) setParam("duree_max_pause_minutes", String(Number(duree_max_pause_minutes)));
   res.json({ ok: true });
 });
 app.get("/api/tableau-de-bord", auth, admin, (req, res) => {
@@ -596,6 +736,7 @@ app.get("/api/tableau-de-bord", auth, admin, (req, res) => {
     const inactifMin = act ? Math.round((act.inactif_secondes || 0) / 60) : 0;
     const retMinJour = ar ? calculerMinutesRetard(ar, att) : 0;
     const retMinMois = retardCumuleMois(u.id, mois, att);
+    const pauseInfo = etatPauseJour(u.id, date);
     const presJour = heuresPresenceJour(u.id, date);
     const presMois = heuresPresenceMois(u.id, mois);
     const tsJour = somme("AND date=?", date);
@@ -606,11 +747,16 @@ app.get("/api/tableau-de-bord", auth, admin, (req, res) => {
       nom: u.nom,
       arrivee: ar,
       depart: dep,
-      statut: !ar ? "Pas encore connecté(e)" : ar > att ? "En retard" : "À l'heure",
+      pause_en_cours: pauseInfo.en_pause,
+      pause_minutes_jour: pauseInfo.minutes_pause_jour,
+      pause_texte_jour: pauseInfo.texte_pause_jour,
+      statut: !ar ? "Pas encore connecté(e)" : pauseInfo.en_pause ? "En pause" : ar > att ? "En retard" : "À l'heure",
       retard_jour_min: retMinJour,
       retard_jour_texte: ar ? (retMinJour > 0 ? formaterDuree(retMinJour) : "À l'heure") : "—",
-      retard_mois_min: retMinMois,
-      retard_mois_texte: formaterDuree(retMinMois),
+      retard_mois_min: retMinMois.total_minutes,
+      retard_mois_texte: retMinMois.texte,
+      retard_mois_details: retMinMois.details,
+      retard_mois_nombre: retMinMois.nombre_retards,
       heures_jour: presJour,
       heures_mois: presMois,
       heures_presence_jour: presJour,
@@ -737,6 +883,9 @@ async function demarrer() {
 
   if (!getParam("activites", null)) setParam("activites", JSON.stringify(["Deméya Service Conseil", "EHPAD Invest", "Autre"]));
   if (!getParam("heure_attendue", null)) setParam("heure_attendue", "08:00");
+  if (!getParam("debut_pause_recommande", null)) setParam("debut_pause_recommande", "12:00");
+  if (!getParam("fin_pause_recommande", null)) setParam("fin_pause_recommande", "13:00");
+  if (!getParam("duree_max_pause_minutes", null)) setParam("duree_max_pause_minutes", "60");
 
   const nbUsers = db.prepare("SELECT COUNT(*) c FROM utilisateurs").get().c;
   if (nbUsers === 0) {
